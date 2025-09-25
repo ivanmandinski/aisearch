@@ -1,0 +1,73 @@
+{
+  "name": "hybrid-search-api",
+  "version": "1.0.0",
+  "description": "Hybrid search API for WordPress using Qdrant, LlamaIndex, and Cerebras LLM",
+  "main": "main.py",
+  "scripts": {
+    "start": "uvicorn main:app --host 0.0.0.0 --port $PORT",
+    "dev": "uvicorn main:app --host 0.0.0.0 --port 8000 --reload",
+    "test": "python -m pytest tests/",
+    "lint": "flake8 .",
+    "format": "black ."
+  },
+  "keywords": [
+    "search",
+    "wordpress",
+    "qdrant",
+    "llamaindex",
+    "cerebras",
+    "hybrid-search",
+    "vector-search"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "engines": {
+    "python": "3.11"
+  },
+  "buildpacks": [
+    {
+      "url": "heroku/python"
+    }
+  ],
+  "formation": {
+    "web": {
+      "quantity": 1,
+      "size": "basic"
+    }
+  },
+  "addons": [],
+  "env": {
+    "QDRANT_URL": {
+      "description": "Qdrant vector database URL",
+      "value": "http://localhost:6333"
+    },
+    "CEREBRAS_API_BASE": {
+      "description": "Cerebras API base URL",
+      "value": "https://api.cerebras.ai/v1"
+    },
+    "CEREBRAS_MODEL": {
+      "description": "Cerebras model to use",
+      "value": "cerebras-llama-2-7b-chat"
+    },
+    "API_HOST": {
+      "description": "API host",
+      "value": "0.0.0.0"
+    },
+    "API_PORT": {
+      "description": "API port",
+      "value": "8000"
+    },
+    "MAX_SEARCH_RESULTS": {
+      "description": "Maximum search results",
+      "value": "10"
+    },
+    "SEARCH_TIMEOUT": {
+      "description": "Search timeout in seconds",
+      "value": "30"
+    },
+    "EMBEDDING_DIMENSION": {
+      "description": "Embedding dimension",
+      "value": "1536"
+    }
+  }
+}

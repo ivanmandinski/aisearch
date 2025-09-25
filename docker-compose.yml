@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  hybrid-search-api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - QDRANT_COLLECTION_NAME=${QDRANT_COLLECTION_NAME:-wordpress_content}
+      - CEREBRAS_API_BASE=${CEREBRAS_API_BASE}
+      - CEREBRAS_API_KEY=${CEREBRAS_API_KEY}
+      - CEREBRAS_MODEL=${CEREBRAS_MODEL:-cerebras-llama-2-7b-chat}
+      - WORDPRESS_URL=${WORDPRESS_URL}
+      - WORDPRESS_USERNAME=${WORDPRESS_USERNAME}
+      - WORDPRESS_PASSWORD=${WORDPRESS_PASSWORD}
+      - WORDPRESS_API_URL=${WORDPRESS_API_URL}
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - MAX_SEARCH_RESULTS=${MAX_SEARCH_RESULTS:-10}
+      - SEARCH_TIMEOUT=${SEARCH_TIMEOUT:-30}
+      - EMBEDDING_DIMENSION=${EMBEDDING_DIMENSION:-1536}
+    depends_on:
+      - qdrant
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  qdrant:
+    image: qdrant/qdrant:v1.7.0
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  qdrant_storage:
