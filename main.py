@@ -13,7 +13,7 @@ import uvicorn
 
 from config import settings
 from wordpress_client import WordPressContentFetcher
-from llamaindex_orchestrator import LlamaIndexOrchestrator
+from simple_hybrid_search import SimpleHybridSearch
 from cerebras_llm import CerebrasLLM
 
 # Configure logging
@@ -37,7 +37,7 @@ app.add_middleware(
 )
 
 # Global instances
-orchestrator = None
+search_system = None
 llm_client = None
 wp_client = None
 
@@ -48,6 +48,7 @@ class SearchRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=50, description="Maximum number of results")
     include_answer: bool = Field(default=False, description="Whether to include LLM-generated answer")
     filters: Optional[Dict[str, Any]] = Field(default=None, description="Search filters")
+    ai_instructions: Optional[str] = Field(default=None, description="Custom AI instructions for answer generation")
 
 
 class SearchResponse(BaseModel):
@@ -80,13 +81,13 @@ class HealthResponse(BaseModel):
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup."""
-    global orchestrator, llm_client, wp_client
+    global search_system, llm_client, wp_client
     
     try:
         logger.info("Starting hybrid search service...")
         
         # Initialize services
-        orchestrator = LlamaIndexOrchestrator()
+        search_system = SimpleHybridSearch()
         llm_client = CerebrasLLM()
         wp_client = WordPressContentFetcher()
         
@@ -105,11 +106,11 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Clean up resources on shutdown."""
-    global orchestrator, wp_client
+    global search_system, wp_client
     
     try:
-        if orchestrator:
-            orchestrator.close()
+        if search_system:
+            search_system.close()
         if wp_client:
             await wp_client.close()
         logger.info("Hybrid search service shutdown completed")
@@ -136,8 +137,8 @@ async def health_check():
     
     try:
         # Check Qdrant connection
-        if orchestrator:
-            stats = orchestrator.get_index_stats()
+        if search_system:
+            stats = search_system.get_stats()
             services_status["qdrant"] = "healthy" if stats.get('total_documents', 0) >= 0 else "unhealthy"
         else:
             services_status["qdrant"] = "not_initialized"
@@ -174,7 +175,7 @@ async def health_check():
 @app.post("/search", response_model=SearchResponse)
 async def search(request: SearchRequest):
     """Perform hybrid search on indexed content."""
-    if not orchestrator:
+    if not search_system:
         raise HTTPException(status_code=503, detail="Search service not initialized")
     
     start_time = datetime.utcnow()
@@ -189,16 +190,21 @@ async def search(request: SearchRequest):
             search_query = request.query
         
         # Perform search
-        results = orchestrator.search(search_query, limit=request.limit)
+        if request.include_answer:
+            result = await search_system.search_with_answer(
+                search_query, 
+                limit=request.limit, 
+                custom_instructions=request.ai_instructions
+            )
+            results = result.get('sources', [])
+            answer = result.get('answer')
+        else:
+            results = await search_system.search(search_query, limit=request.limit)
+            answer = None
         
         # Apply filters if provided
         if request.filters:
             results = _apply_filters(results, request.filters)
-        
-        # Generate answer if requested
-        answer = None
-        if request.include_answer and llm_client and results:
-            answer = llm_client.generate_answer(request.query, results)
         
         processing_time = (datetime.utcnow() - start_time).total_seconds()
         
@@ -219,14 +225,14 @@ async def search(request: SearchRequest):
 @app.post("/index", response_model=IndexResponse)
 async def index_content(request: IndexRequest, background_tasks: BackgroundTasks):
     """Index WordPress content."""
-    if not orchestrator or not wp_client:
+    if not search_system or not wp_client:
         raise HTTPException(status_code=503, detail="Indexing service not initialized")
     
     start_time = datetime.utcnow()
     
     try:
         # Check if index already exists
-        stats = orchestrator.get_index_stats()
+        stats = search_system.get_stats()
         if stats.get('total_documents', 0) > 0 and not request.force_reindex:
             return IndexResponse(
                 success=True,
@@ -244,7 +250,7 @@ async def index_content(request: IndexRequest, background_tasks: BackgroundTasks
         
         # Index documents
         logger.info(f"Indexing {len(documents)} documents...")
-        success = orchestrator.index_documents(documents)
+        success = await search_system.index_documents(documents)
         
         if not success:
             raise HTTPException(status_code=500, detail="Failed to index documents")
@@ -263,14 +269,104 @@ async def index_content(request: IndexRequest, background_tasks: BackgroundTasks
         raise HTTPException(status_code=500, detail=f"Indexing failed: {str(e)}")
 
 
-@app.get("/stats")
-async def get_stats():
-    """Get indexing and search statistics."""
-    if not orchestrator:
+@app.delete("/collection")
+async def delete_collection():
+    """Delete the search collection."""
+    if not search_system:
         raise HTTPException(status_code=503, detail="Service not initialized")
     
     try:
-        stats = orchestrator.get_index_stats()
+        success = search_system.qdrant_manager.delete_collection()
+        if success:
+            return {"message": "Collection deleted successfully"}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to delete collection")
+    except Exception as e:
+        logger.error(f"Error deleting collection: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete collection: {str(e)}")
+
+@app.get("/test-wp-fetch")
+async def test_wp_fetch():
+    """Test WordPress content fetching."""
+    if not wp_client:
+        raise HTTPException(status_code=503, detail="WordPress client not initialized")
+    
+    try:
+        # Test fetching a small amount of content
+        logger.info("Testing WordPress content fetch...")
+        documents = await wp_client.get_all_content()
+        
+        return {
+            "message": "WordPress fetch test completed",
+            "document_count": len(documents),
+            "sample_documents": documents[:3] if documents else []
+        }
+        
+    except Exception as e:
+        logger.error(f"WordPress fetch test error: {e}")
+        raise HTTPException(status_code=500, detail=f"WordPress fetch test failed: {str(e)}")
+
+@app.post("/test-index")
+async def test_index():
+    """Test indexing with minimal data."""
+    if not search_system:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        # Create minimal test documents
+        test_docs = [
+            {
+                "id": "test1",
+                "title": "Energy Audit Services",
+                "slug": "energy-audit",
+                "type": "post",
+                "url": "https://www.scsengineers.com/energy-audit/",
+                "date": "2024-01-01",
+                "modified": "2024-01-01",
+                "author": "SCS Engineers",
+                "categories": [],
+                "tags": [],
+                "excerpt": "Professional energy audit services for industrial facilities.",
+                "content": "SCS Engineers provides comprehensive energy audit services to help industrial facilities reduce energy costs and improve efficiency. Our certified energy auditors use advanced tools and techniques to identify energy-saving opportunities.",
+                "word_count": 25
+            },
+            {
+                "id": "test2", 
+                "title": "Environmental Consulting",
+                "slug": "environmental-consulting",
+                "type": "post",
+                "url": "https://www.scsengineers.com/environmental-consulting/",
+                "date": "2024-01-02",
+                "modified": "2024-01-02",
+                "author": "SCS Engineers",
+                "categories": [],
+                "tags": [],
+                "excerpt": "Expert environmental consulting services.",
+                "content": "SCS Engineers offers environmental consulting services including environmental impact assessments, remediation planning, and regulatory compliance assistance.",
+                "word_count": 20
+            }
+        ]
+        
+        # Index test documents
+        success = await search_system.index_documents(test_docs)
+        
+        if success:
+            return {"message": "Test indexing successful", "documents": len(test_docs)}
+        else:
+            raise HTTPException(status_code=500, detail="Test indexing failed")
+            
+    except Exception as e:
+        logger.error(f"Test indexing error: {e}")
+        raise HTTPException(status_code=500, detail=f"Test indexing failed: {str(e)}")
+
+@app.get("/stats")
+async def get_stats():
+    """Get indexing and search statistics."""
+    if not search_system:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        stats = search_system.get_stats()
         return {
             "index_stats": stats,
             "service_info": {

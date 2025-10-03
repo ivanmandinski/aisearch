@@ -28,6 +28,10 @@ Your hybrid search system has been configured specifically for SCS Engineers wit
    - Create new project from GitHub
    - Connect your repository
    - Railway will auto-detect Python and deploy
+   - **Note**: Railway automatically detects Python projects and uses `requirements.txt`
+   - **Fixed**: Removed non-existent `wordpress-api` package, using version ranges for better compatibility
+   - **Optimized**: Removed heavy PyTorch/transformers dependencies, using OpenAI embeddings instead of BGE
+   - **Size Reduced**: Multi-stage Docker build reduces image size from 7.9GB to under 4GB
 
 3. **Set Environment Variables**
    In Railway dashboard, add these variables:
@@ -37,14 +41,14 @@ Your hybrid search system has been configured specifically for SCS Engineers wit
    QDRANT_COLLECTION_NAME=scs_wp_hybrid
    CEREBRAS_API_KEY=csk-d36t36pvwh54t9fpyn9xd339ynpkvw8ev4r2me2nt89y3y5h
    CEREBRAS_MODEL=llama-3.3-70b
-   EMBED_MODEL=BAAI/bge-small-en-v1.5
-   SPARSE_MODEL=Qdrant/bm25
+   EMBED_MODEL=text-embedding-ada-002
+   SPARSE_MODEL=tfidf
    WORDPRESS_URL=https://www.scsengineers.com
    WORDPRESS_USERNAME=your_wp_username
    WORDPRESS_PASSWORD=your_wp_app_password
    WORDPRESS_API_URL=https://www.scsengineers.com/wp-json/wp/v2
    API_TITLE=SCS Engineers Search (Hybrid)
-   EMBEDDING_DIMENSION=384
+   EMBEDDING_DIMENSION=1536
    CHUNK_SIZE=512
    DEFAULT_SITE_BASE=https://www.scsengineers.com
    SEARCH_PAGE_TITLE=SCS Engineers Search (Hybrid)

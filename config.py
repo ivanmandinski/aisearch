@@ -3,7 +3,7 @@ Configuration module for the hybrid search system.
 """
 import os
 from typing import Optional
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     cerebras_api_base: str = "https://api.cerebras.ai/v1"
     cerebras_api_key: str
     cerebras_model: str = "cerebras-llama-2-7b-chat"
+    
+    # OpenAI Configuration (for embeddings)
+    openai_api_key: str = ""
     
     # Embedding and Sparse Models
     embed_model: str = "text-embedding-ada-002"
@@ -38,10 +41,13 @@ class Settings(BaseSettings):
     # Search Configuration
     max_search_results: int = 10
     search_timeout: int = 30
-    embedding_dimension: int = 1536
+    embedding_dimension: int = 384
     chunk_size: int = 512
     default_site_base: str = ""
     search_page_title: str = "Hybrid Search"
+    
+    # AI Instructions Configuration
+    ai_instructions: str = ""
     
     class Config:
         env_file = ".env"

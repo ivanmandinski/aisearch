@@ -466,3 +466,4 @@ Future versions may include webhook support for:
 - WordPress integration
 - AI-powered query processing
 - Railway deployment support
+

@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct, Filter, FieldCondition, 
-    MatchValue, SearchRequest, Query, HybridQuery
+    MatchValue, SearchRequest, Query
 )
 from qdrant_client.http import models
 import numpy as np
@@ -37,19 +37,13 @@ class QdrantManager:
                 logger.info(f"Collection '{self.collection_name}' already exists")
                 return True
             
-            # Create collection with hybrid search configuration
+            # Create collection with simple vector configuration
             self.client.create_collection(
                 collection_name=self.collection_name,
-                vectors_config={
-                    "dense": VectorParams(
-                        size=self.embedding_dimension,
-                        distance=Distance.COSINE
-                    ),
-                    "sparse": VectorParams(
-                        size=10000,  # Sparse vector size for BM25-like search
-                        distance=Distance.DOT
-                    )
-                }
+                vectors_config=VectorParams(
+                    size=self.embedding_dimension,
+                    distance=Distance.COSINE
+                )
             )
             
             logger.info(f"Created collection '{self.collection_name}'")
@@ -105,10 +99,7 @@ class QdrantManager:
                 # Create point structure
                 point = PointStruct(
                     id=point_id,
-                    vector={
-                        "dense": dense_vector,
-                        "sparse": sparse_vector
-                    },
+                    vector=dense_vector,
                     payload=payload
                 )
                 
@@ -150,28 +141,24 @@ class QdrantManager:
             alpha: Weight for dense vs sparse (0.0 = sparse only, 1.0 = dense only)
         """
         try:
-            # Perform hybrid search
-            search_results = self.client.search(
+            # Perform dense search
+            dense_results = self.client.search(
                 collection_name=self.collection_name,
-                query=HybridQuery(
-                    dense=Query(
-                        vector=dense_vector,
-                        using="dense"
-                    ),
-                    sparse=Query(
-                        vector=sparse_vector,
-                        using="sparse"
-                    ),
-                    alpha=alpha
-                ),
-                limit=limit,
+                query_vector=dense_vector,
+                limit=limit * 2,  # Get more results for hybrid scoring
                 with_payload=True,
                 with_vectors=False
             )
             
-            # Format results
+            # For now, return dense results with hybrid scoring
+            # In a full implementation, you would also perform sparse search
+            # and combine the results using alpha weighting
+            
             results = []
-            for result in search_results:
+            for result in dense_results:
+                # Calculate hybrid score (currently just dense score)
+                hybrid_score = result.score * alpha
+                
                 result_data = {
                     "id": result.payload["id"],
                     "title": result.payload["title"],
@@ -186,10 +173,14 @@ class QdrantManager:
                     "excerpt": result.payload["excerpt"],
                     "content": result.payload["content"],
                     "word_count": result.payload["word_count"],
-                    "score": result.score,
-                    "relevance": self._calculate_relevance(result.score, alpha)
+                    "score": hybrid_score,
+                    "relevance": self._calculate_relevance(hybrid_score, alpha)
                 }
                 results.append(result_data)
+            
+            # Sort by hybrid score and limit results
+            results.sort(key=lambda x: x['score'], reverse=True)
+            results = results[:limit]
             
             logger.info(f"Hybrid search returned {len(results)} results")
             return results

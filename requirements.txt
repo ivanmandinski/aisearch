@@ -2,20 +2,13 @@
 fastapi>=0.104.0,<0.105.0
 uvicorn[standard]>=0.24.0,<0.25.0
 pydantic>=2.5.0,<3.0.0
+pydantic-settings>=2.0.0,<3.0.0
 
-# Vector database and search
+# Vector database
 qdrant-client>=1.7.0,<2.0.0
-llama-index>=0.9.0,<0.10.0
-llama-index-vector-stores-qdrant>=0.1.0,<0.2.0
-llama-index-embeddings-openai>=0.1.0,<0.2.0
-llama-index-embeddings-huggingface>=0.1.0,<0.2.0
-llama-index-llms-openai>=0.1.0,<0.2.0
 
 # LLM and AI
 openai>=1.3.0,<2.0.0
-sentence-transformers>=2.2.0,<3.0.0
-transformers>=4.35.0,<5.0.0
-torch>=2.1.0,<3.0.0
 tiktoken>=0.5.0,<1.0.0
 
 # HTTP and utilities

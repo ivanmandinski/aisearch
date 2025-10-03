@@ -15,7 +15,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('HYBRID_SEARCH_VERSION', '1.0.0');
+define('HYBRID_SEARCH_VERSION', '1.0.2');
 define('HYBRID_SEARCH_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('HYBRID_SEARCH_PLUGIN_PATH', plugin_dir_path(__FILE__));
 
@@ -46,6 +46,7 @@ class HybridSearchPlugin {
         add_action('wp_enqueue_scripts', array($this, 'enqueue_scripts'));
         add_action('wp_ajax_hybrid_search', array($this, 'handle_ajax_search'));
         add_action('wp_ajax_nopriv_hybrid_search', array($this, 'handle_ajax_search'));
+        add_action('wp_ajax_test_hybrid_search_api', array($this, 'handle_test_api'));
         
         // Replace default search
         add_filter('posts_search', array($this, 'replace_search_query'), 10, 2);
@@ -106,6 +107,7 @@ class HybridSearchPlugin {
         register_setting('hybrid_search_settings', 'hybrid_search_enabled');
         register_setting('hybrid_search_settings', 'hybrid_search_max_results');
         register_setting('hybrid_search_settings', 'hybrid_search_include_answer');
+        register_setting('hybrid_search_settings', 'hybrid_search_ai_instructions');
     }
     
     /**
@@ -154,6 +156,13 @@ class HybridSearchPlugin {
                         <td>
                             <input type="checkbox" name="hybrid_search_include_answer" value="1" <?php checked(1, get_option('hybrid_search_include_answer'), true); ?> />
                             <p class="description">Include AI-generated answer with search results</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">AI Instructions</th>
+                        <td>
+                            <textarea name="hybrid_search_ai_instructions" rows="4" cols="50" class="large-text"><?php echo esc_textarea(get_option('hybrid_search_ai_instructions')); ?></textarea>
+                            <p class="description">Custom instructions for AI answer generation (e.g., "Focus on technical details", "Use simple language")</p>
                         </td>
                     </tr>
                 </table>
@@ -221,7 +230,9 @@ class HybridSearchPlugin {
                 'apiUrl' => get_option('hybrid_search_api_url'),
                 'apiKey' => get_option('hybrid_search_api_key'),
                 'maxResults' => get_option('hybrid_search_max_results', 10),
-                'includeAnswer' => get_option('hybrid_search_include_answer', false)
+                'includeAnswer' => get_option('hybrid_search_include_answer', false),
+                'aiInstructions' => get_option('hybrid_search_ai_instructions', ''),
+                'nonce' => wp_create_nonce('hybrid_search_nonce')
             ));
         }
     }
@@ -230,15 +241,28 @@ class HybridSearchPlugin {
      * Handle AJAX search
      */
     public function handle_ajax_search() {
-        check_ajax_referer('hybrid_search_nonce', 'nonce');
+        // Verify nonce for security
+        if (!wp_verify_nonce($_POST['nonce'], 'hybrid_search_nonce')) {
+            wp_send_json_error('Invalid nonce');
+            return;
+        }
         
         $query = sanitize_text_field($_POST['query']);
         $limit = intval($_POST['limit']) ?: 10;
         $include_answer = isset($_POST['include_answer']) ? (bool)$_POST['include_answer'] : false;
+        $ai_instructions = sanitize_textarea_field($_POST['ai_instructions'] ?? '');
         
-        $results = $this->perform_search($query, $limit, $include_answer);
+        $results = $this->perform_search($query, $limit, $include_answer, $ai_instructions);
         
         wp_send_json_success($results);
+    }
+    
+    /**
+     * Handle API test
+     */
+    public function handle_test_api() {
+        $result = $this->test_api_connection();
+        wp_send_json($result);
     }
     
     /**
@@ -255,7 +279,8 @@ class HybridSearchPlugin {
             'timeout' => 10,
             'headers' => array(
                 'User-Agent' => 'WordPress Hybrid Search Plugin'
-            )
+            ),
+            'sslverify' => true
         ));
         
         if (is_wp_error($response)) {
@@ -275,7 +300,7 @@ class HybridSearchPlugin {
     /**
      * Perform search via API
      */
-    private function perform_search($query, $limit = 10, $include_answer = false) {
+    private function perform_search($query, $limit = 10, $include_answer = false, $ai_instructions = '') {
         $api_url = get_option('hybrid_search_api_url');
         $api_key = get_option('hybrid_search_api_key');
         
@@ -286,7 +311,8 @@ class HybridSearchPlugin {
         $request_data = array(
             'query' => $query,
             'limit' => $limit,
-            'include_answer' => $include_answer
+            'include_answer' => $include_answer,
+            'ai_instructions' => $ai_instructions
         );
         
         $headers = array(
@@ -301,7 +327,8 @@ class HybridSearchPlugin {
         $response = wp_remote_post($api_url . '/search', array(
             'headers' => $headers,
             'body' => json_encode($request_data),
-            'timeout' => 30
+            'timeout' => 30,
+            'sslverify' => true
         ));
         
         if (is_wp_error($response)) {

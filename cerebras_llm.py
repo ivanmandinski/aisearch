@@ -110,7 +110,7 @@ Return only the queries, one per line, without numbering or bullet points.
             logger.error(f"Error expanding query: {e}")
             return [query]
     
-    def generate_answer(self, query: str, search_results: List[Dict[str, Any]]) -> str:
+    def generate_answer(self, query: str, search_results: List[Dict[str, Any]], custom_instructions: str = "") -> str:
         """Generate a comprehensive answer based on search results."""
         try:
             if not search_results:
@@ -122,18 +122,23 @@ Return only the queries, one per line, without numbering or bullet points.
                 context_parts.append(f"""
 Source {i}: {result['title']}
 URL: {result['url']}
-Content: {result['excerpt'] or result['content'][:500]}...
+Content: {result['excerpt'] or result.get('content', '')[:500]}...
 """)
             
             context = "\n".join(context_parts)
             
-            prompt = f"""
+            # Use custom instructions if provided, otherwise use default
+            instructions = custom_instructions.strip() if custom_instructions.strip() else settings.ai_instructions.strip()
+            
+            if instructions:
+                base_instructions = f"""
+Custom Instructions: {instructions}
+
 Based on the following search results, provide a comprehensive answer to the user's question.
-
-Question: "{query}"
-
-Search Results:
-{context}
+"""
+            else:
+                base_instructions = """
+Based on the following search results, provide a comprehensive answer to the user's question.
 
 Instructions:
 1. Provide a clear, well-structured answer based on the search results
@@ -141,6 +146,14 @@ Instructions:
 3. If the search results don't fully answer the question, acknowledge this
 4. Use a helpful and informative tone
 5. Keep the answer concise but comprehensive (2-3 paragraphs max)
+"""
+            
+            prompt = f"""{base_instructions}
+
+Question: "{query}"
+
+Search Results:
+{context}
 
 Answer:
 """
@@ -336,3 +349,4 @@ Respond in JSON format:
         except Exception as e:
             logger.error(f"Error testing Cerebras connection: {e}")
             return False
+

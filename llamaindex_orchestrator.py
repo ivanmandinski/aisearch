@@ -3,20 +3,19 @@ LlamaIndex orchestration for indexing and querying.
 """
 import logging
 from typing import List, Dict, Any, Optional, Tuple
-from llama_index.core import (
+from llama_index import (
     Document, VectorStoreIndex, StorageContext, 
     Settings, SimpleDirectoryReader
 )
-from llama_index.core.node_parser import SentenceSplitter
-from llama_index.core.retrievers import VectorIndexRetriever
-from llama_index.core.query_engine import RetrieverQueryEngine
+from llama_index.node_parser import SentenceSplitter
+from llama_index.retrievers import VectorIndexRetriever
+from llama_index.query_engine import RetrieverQueryEngine
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from llama_index.embeddings.openai import OpenAIEmbedding
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.openai import OpenAI
-from llama_index.core.schema import NodeWithScore
-from llama_index.core.retrievers import BaseRetriever
-from llama_index.core.query_engine import BaseQueryEngine
+from llama_index.schema import NodeWithScore
+from llama_index.retrievers import BaseRetriever
+from llama_index.query_engine import BaseQueryEngine
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -104,18 +103,12 @@ class HybridRetriever(BaseRetriever):
     def _get_query_embedding(self, query: str) -> List[float]:
         """Get dense embedding for query."""
         try:
-            # Use configured embedding model
-            if settings.embed_model.startswith("BAAI/"):
-                embedding_model = HuggingFaceEmbedding(
-                    model_name=settings.embed_model,
-                    device="cpu"
-                )
-            else:
-                embedding_model = OpenAIEmbedding(
-                    api_key=settings.cerebras_api_key,
-                    api_base=settings.cerebras_api_base,
-                    model=settings.embed_model
-                )
+            # Use OpenAI-compatible embedding
+            embedding_model = OpenAIEmbedding(
+                api_key=settings.cerebras_api_key,
+                api_base=settings.cerebras_api_base,
+                model="text-embedding-ada-002"
+            )
             
             embedding = embedding_model.get_text_embedding(query)
             return embedding
@@ -165,19 +158,11 @@ class LlamaIndexOrchestrator:
         self.hybrid_retriever = None
         
         # Configure LlamaIndex settings
-        if settings.embed_model.startswith("BAAI/"):
-            # Use HuggingFace BGE model
-            Settings.embed_model = HuggingFaceEmbedding(
-                model_name=settings.embed_model,
-                device="cpu"  # Use CPU for Railway deployment
-            )
-        else:
-            # Use OpenAI-compatible embedding
-            Settings.embed_model = OpenAIEmbedding(
-                api_key=settings.cerebras_api_key,
-                api_base=settings.cerebras_api_base,
-                model=settings.embed_model
-            )
+        Settings.embed_model = OpenAIEmbedding(
+            api_key=settings.cerebras_api_key,
+            api_base=settings.cerebras_api_base,
+            model="text-embedding-ada-002"
+        )
         
         Settings.llm = OpenAI(
             api_key=settings.cerebras_api_key,

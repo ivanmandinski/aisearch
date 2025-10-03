@@ -161,14 +161,17 @@ GET /suggest?query=partial&limit=5
 1. **Connect Repository**
    - Connect your GitHub repository to Railway
    - Railway will auto-detect the Python project
+   - Railway uses `requirements.txt` automatically
 
 2. **Set Environment Variables**
    - Add all required environment variables in Railway dashboard
+   - Use the values from `scs-production.env` file
    - Ensure Cerebras API key is set
 
 3. **Deploy**
    - Railway will automatically build and deploy
    - Get your API URL from the deployment
+   - **Note**: No `railway.toml` file needed - Railway uses automatic detection
 
 ### Docker Deployment
 

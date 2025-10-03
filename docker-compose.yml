@@ -50,3 +50,4 @@ services:
 
 volumes:
   qdrant_storage:
+
