@@ -300,18 +300,24 @@ class WordPressContentFetcher:
             
             # Filter to only public post types (include built-in types)
             public_types = []
+            type_info_map = {}  # Store type info for REST base lookup
+            
             for post_type, info in types_data.items():
-                # Include if public (including built-in types like post and page)
-                if info.get('public', False):
+                # Include if public AND shown in REST
+                if info.get('public', False) and info.get('rest_base'):
                     public_types.append(post_type)
-                    logger.info(f"Including post type: {post_type} (public: {info.get('public')}, builtin: {info.get('_builtin', False)})")
+                    type_info_map[post_type] = info
+                    rest_base = info.get('rest_base', post_type)
+                    logger.info(f"Including post type: '{post_type}' with REST base: '{rest_base}' (public: {info.get('public')}, show_in_rest: {info.get('show_in_rest')})")
             
             # Ensure posts and pages are always included (fallback)
             if 'post' not in public_types:
                 public_types.append('post')
+                type_info_map['post'] = {'rest_base': 'posts'}
                 logger.warning("'post' type not found in types API, adding manually")
             if 'page' not in public_types:
                 public_types.append('page')
+                type_info_map['page'] = {'rest_base': 'pages'}
                 logger.warning("'page' type not found in types API, adding manually")
             
             logger.info(f"Final public post types to index: {public_types}")
@@ -326,24 +332,43 @@ class WordPressContentFetcher:
                     logger.info(f"Starting to fetch '{post_type}' items...")
                     
                     while True:
-                        # Use different endpoints based on post type
-                        if post_type == 'post':
-                            endpoint = f"{self.base_url}/posts"
-                        elif post_type == 'page':
-                            endpoint = f"{self.base_url}/pages"
-                        else:
-                            endpoint = f"{self.base_url}/{post_type}"
+                        # Get the correct REST base for this post type
+                        rest_base = type_info_map.get(post_type, {}).get('rest_base', post_type)
+                        endpoint = f"{self.base_url}/{rest_base}"
                         
-                        response = await self.client.get(
-                            endpoint,
-                            params={
-                                "per_page": per_page,
-                                "page": page,
-                                "status": "publish",
-                                "_embed": False
-                            }
-                        )
-                        response.raise_for_status()
+                        logger.info(f"Fetching '{post_type}' (page {page}) from endpoint: {endpoint}")
+                        
+                        try:
+                            response = await self.client.get(
+                                endpoint,
+                                params={
+                                    "per_page": per_page,
+                                    "page": page,
+                                    "status": "publish",  # Only publish for now
+                                    "_embed": False
+                                }
+                            )
+                            
+                            if response.status_code == 404:
+                                logger.warning(f"Endpoint {endpoint} returned 404 for {post_type}")
+                                break
+                            
+                            response.raise_for_status()
+                            
+                        except httpx.HTTPStatusError as e:
+                            if e.response.status_code == 404:
+                                logger.warning(f"Endpoint not found for '{post_type}': {endpoint}")
+                                logger.warning(f"This post type may not be exposed to REST API or uses a different endpoint")
+                                break
+                            elif e.response.status_code == 401:
+                                logger.error(f"Authentication required for '{post_type}' - check WordPress credentials")
+                                break
+                            else:
+                                logger.error(f"HTTP error {e.response.status_code} for '{post_type}': {e}")
+                                break
+                        except Exception as e:
+                            logger.error(f"Error fetching page {page} of '{post_type}': {e}")
+                            break
                         
                         batch_items = response.json()
                         if not batch_items:
@@ -365,8 +390,8 @@ class WordPressContentFetcher:
                         page += 1
                         logger.info(f"Fetched {len(batch_items)} {post_type} items (page {page-1}), type total: {post_type_count}")
                         
-                        # Limit to prevent infinite loops
-                        if page > 20:  # Max 20 pages per type = 1000 items per type
+                        # Limit to prevent infinite loops (increased limit)
+                        if page > 100:  # Max 100 pages per type = 5000 items per type
                             logger.warning(f"Reached page limit for {post_type}, stopping pagination")
                             break
                     
