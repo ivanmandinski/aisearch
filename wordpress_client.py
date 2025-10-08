@@ -288,8 +288,12 @@ class WordPressContentFetcher:
             logger.error(f"Error cleaning post data: {e}")
             return None
     
-    async def fetch_all_post_types(self) -> List[Dict[str, Any]]:
-        """Fetch all published content from all post types."""
+    async def fetch_all_post_types(self, selected_types: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """Fetch all published content from all post types.
+        
+        Args:
+            selected_types: Optional list of specific post types to fetch. If None, fetches all public types.
+        """
         all_content = []
         
         try:
@@ -326,6 +330,18 @@ class WordPressContentFetcher:
                 public_types.append('page')
                 type_info_map['page'] = {'rest_base': 'pages'}
                 logger.warning("'page' type not found in types API, adding manually")
+            
+            # Filter by selected types if provided
+            if selected_types:
+                logger.info(f"🎯 Filtering to selected post types: {selected_types}")
+                # Only include post types that are in the selected list
+                filtered_types = [pt for pt in public_types if pt in selected_types]
+                logger.info(f"✅ Post types after filtering: {filtered_types}")
+                public_types = filtered_types
+            
+            if not public_types:
+                logger.warning("No post types to index after filtering!")
+                return all_content
             
             logger.info(f"✨ FINAL POST TYPES TO INDEX: {public_types}")
             logger.info(f"📊 Total post types to fetch: {len(public_types)}")
@@ -465,15 +481,24 @@ class WordPressContentFetcher:
         
         return all_content
 
-    async def get_all_content(self) -> List[Dict[str, Any]]:
-        """Fetch and process all WordPress content from all post types."""
+    async def get_all_content(self, selected_types: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """Fetch and process all WordPress content from all post types.
+        
+        Args:
+            selected_types: Optional list of specific post types to fetch. If None, fetches all public types.
+        """
         logger.info("Starting content fetch from WordPress...")
         
+        if selected_types:
+            logger.info(f"Fetching only selected post types: {selected_types}")
+        else:
+            logger.info("Fetching all available public post types")
+        
         try:
-            # Fetch all content from all post types
-            all_content = await self.fetch_all_post_types()
+            # Fetch all content from specified or all post types
+            all_content = await self.fetch_all_post_types(selected_types)
             
-            logger.info(f"Successfully fetched {len(all_content)} content items from all post types")
+            logger.info(f"Successfully fetched {len(all_content)} content items")
             return all_content
             
         except Exception as e:

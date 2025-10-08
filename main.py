@@ -78,6 +78,7 @@ class SearchResponse(BaseModel):
 
 class IndexRequest(BaseModel):
     force_reindex: bool = Field(default=False, description="Force reindexing even if index exists")
+    post_types: Optional[List[str]] = Field(default=None, description="Specific post types to index (None = all)")
 
 
 class IndexResponse(BaseModel):
@@ -380,8 +381,13 @@ async def index_content(request: IndexRequest, background_tasks: BackgroundTasks
         
         # Fetch content from WordPress
         logger.info("Fetching content from WordPress...")
+        if request.post_types:
+            logger.info(f"Fetching only selected post types: {request.post_types}")
+        else:
+            logger.info("Fetching all available post types")
+            
         try:
-            documents = await wp_client.get_all_content()
+            documents = await wp_client.get_all_content(request.post_types)
             logger.info(f"Fetched {len(documents) if documents else 0} documents from WordPress")
         except Exception as e:
             logger.error(f"Failed to fetch WordPress content: {e}", exc_info=True)
