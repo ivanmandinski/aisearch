@@ -169,3 +169,4 @@ When working correctly, you should see:
 - ✅ AJAX requests return 200 status
 - ✅ Results link to correct WordPress pages
 
+

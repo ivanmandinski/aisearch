@@ -128,15 +128,18 @@ Content: {result['excerpt'] or result.get('content', '')[:500]}...
             context = "\n".join(context_parts)
             
             # Use custom instructions if provided, otherwise use default
-            instructions = custom_instructions.strip() if custom_instructions.strip() else settings.ai_instructions.strip()
+            custom_instr = custom_instructions.strip() if custom_instructions else ""
             
-            if instructions:
+            if custom_instr:
+                # Use ONLY custom instructions when provided
                 base_instructions = f"""
-Custom Instructions: {instructions}
+Based on the following search results, answer the user's question.
 
-Based on the following search results, provide a comprehensive answer to the user's question.
+IMPORTANT: Follow these custom instructions EXACTLY:
+{custom_instr}
 """
             else:
+                # Use default instructions only when no custom instructions are provided
                 base_instructions = """
 Based on the following search results, provide a comprehensive answer to the user's question.
 

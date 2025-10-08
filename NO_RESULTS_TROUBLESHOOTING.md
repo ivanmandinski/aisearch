@@ -163,3 +163,4 @@ curl -s "https://www.scsengineers.com/wp-json/wp/v2/posts?per_page=1" | jq '.[0]
 
 The core issue is the missing OpenAI API key for embeddings. Once added, the system should work perfectly!
 
+
