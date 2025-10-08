@@ -163,18 +163,26 @@ async def shutdown_event():
 
 
 # API Endpoints
-@app.get("/", response_model=Dict[str, str])
+@app.get("/")
 async def root():
     """Root endpoint with API information."""
-    return {
-        "message": "Hybrid Search API",
-        "version": settings.api_version,
-        "docs": "/docs",
-        "health": "/health"
-    }
+    return JSONResponse(
+        content={
+            "message": "Hybrid Search API",
+            "version": "1.0.0",
+            "status": "running",
+            "docs": "/docs",
+            "health": "/health",
+            "endpoints": {
+                "search": "POST /search",
+                "index": "POST /index",
+                "health": "GET /health"
+            }
+        }
+    )
 
 
-@app.get("/health", response_model=HealthResponse)
+@app.get("/health")
 async def health_check():
     """Health check endpoint."""
     services_status = {}
@@ -182,16 +190,25 @@ async def health_check():
     try:
         # Check Qdrant connection
         if search_system:
-            stats = search_system.get_stats()
-            services_status["qdrant"] = "healthy" if stats.get('total_documents', 0) >= 0 else "unhealthy"
+            try:
+                stats = search_system.get_stats()
+                services_status["qdrant"] = "healthy" if stats.get('total_documents', 0) >= 0 else "unhealthy"
+            except Exception as e:
+                services_status["qdrant"] = f"error: {str(e)}"
         else:
             services_status["qdrant"] = "not_initialized"
         
         # Check Cerebras LLM
-        if llm_client and llm_client.test_connection():
-            services_status["cerebras_llm"] = "healthy"
+        if llm_client:
+            try:
+                if llm_client.test_connection():
+                    services_status["cerebras_llm"] = "healthy"
+                else:
+                    services_status["cerebras_llm"] = "connection_failed"
+            except Exception as e:
+                services_status["cerebras_llm"] = f"error: {str(e)}"
         else:
-            services_status["cerebras_llm"] = "unhealthy"
+            services_status["cerebras_llm"] = "not_initialized"
         
         # Check WordPress connection
         if wp_client:
@@ -205,14 +222,16 @@ async def health_check():
         ) else "degraded"
         
     except Exception as e:
-        logger.error(f"Health check error: {e}")
+        logger.error(f"Health check error: {e}", exc_info=True)
         services_status = {"error": str(e)}
         overall_status = "unhealthy"
     
-    return HealthResponse(
-        status=overall_status,
-        timestamp=datetime.utcnow(),
-        services=services_status
+    return JSONResponse(
+        content={
+            "status": overall_status,
+            "timestamp": datetime.utcnow().isoformat(),
+            "services": services_status
+        }
     )
 
 
@@ -275,13 +294,20 @@ async def search(request: SearchRequest):
         
         processing_time = (datetime.utcnow() - start_time).total_seconds()
         
-        return SearchResponse(
-            query=request.query,
-            results=results,
-            total_results=len(results),
-            processing_time=processing_time,
-            answer=answer,
-            query_analysis=query_analysis
+        # Return JSON response directly (avoid Pydantic serialization issues)
+        return JSONResponse(
+            content={
+                "success": True,
+                "results": results,
+                "metadata": {
+                    "query": request.query,
+                    "total_results": len(results),
+                    "response_time": processing_time * 1000,  # Convert to milliseconds
+                    "has_answer": answer is not None,
+                    "answer": answer or "",
+                    "query_analysis": query_analysis
+                }
+            }
         )
         
     except Exception as e:
@@ -302,51 +328,144 @@ async def search(request: SearchRequest):
         )
 
 
-@app.post("/index", response_model=IndexResponse)
-async def index_content(request: IndexRequest, background_tasks: BackgroundTasks):
+@app.post("/index")
+async def index_content(request: IndexRequest, background_tasks: BackgroundTasks = None):
     """Index WordPress content."""
-    if not search_system or not wp_client:
-        raise HTTPException(status_code=503, detail="Indexing service not initialized")
-    
     start_time = datetime.utcnow()
     
     try:
-        # Check if index already exists
-        stats = search_system.get_stats()
-        if stats.get('total_documents', 0) > 0 and not request.force_reindex:
-            return IndexResponse(
-                success=True,
-                message="Index already exists. Use force_reindex=true to reindex.",
-                documents_indexed=stats.get('total_documents', 0),
-                processing_time=(datetime.utcnow() - start_time).total_seconds()
+        # Check if services are initialized
+        if not search_system:
+            logger.error("Search system not initialized")
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False,
+                    "message": "Search service not initialized. Check Railway logs.",
+                    "indexed_count": 0,
+                    "total_count": 0,
+                    "processing_time": 0
+                }
             )
+        
+        if not wp_client:
+            logger.error("WordPress client not initialized")
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False,
+                    "message": "WordPress service not initialized. Check Railway logs.",
+                    "indexed_count": 0,
+                    "total_count": 0,
+                    "processing_time": 0
+                }
+            )
+        
+        # Check if index already exists
+        try:
+            stats = search_system.get_stats()
+            if stats.get('total_documents', 0) > 0 and not request.force_reindex:
+                processing_time = (datetime.utcnow() - start_time).total_seconds()
+                return JSONResponse(
+                    content={
+                        "success": True,
+                        "message": "Index already exists. Use force_reindex=true to reindex.",
+                        "indexed_count": stats.get('total_documents', 0),
+                        "total_count": stats.get('total_documents', 0),
+                        "processing_time": processing_time
+                    }
+                )
+        except Exception as e:
+            logger.warning(f"Could not get stats: {e}")
         
         # Fetch content from WordPress
         logger.info("Fetching content from WordPress...")
-        documents = await wp_client.get_all_content()
+        try:
+            documents = await wp_client.get_all_content()
+            logger.info(f"Fetched {len(documents) if documents else 0} documents from WordPress")
+        except Exception as e:
+            logger.error(f"Failed to fetch WordPress content: {e}", exc_info=True)
+            processing_time = (datetime.utcnow() - start_time).total_seconds()
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "message": f"Failed to fetch WordPress content: {str(e)}",
+                    "indexed_count": 0,
+                    "total_count": 0,
+                    "processing_time": processing_time
+                }
+            )
         
         if not documents:
-            raise HTTPException(status_code=404, detail="No content found in WordPress")
+            processing_time = (datetime.utcnow() - start_time).total_seconds()
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "success": False,
+                    "message": "No content found in WordPress",
+                    "indexed_count": 0,
+                    "total_count": 0,
+                    "processing_time": processing_time
+                }
+            )
         
         # Index documents
         logger.info(f"Indexing {len(documents)} documents...")
-        success = await search_system.index_documents(documents)
+        try:
+            success = await search_system.index_documents(documents)
+        except Exception as e:
+            logger.error(f"Failed to index documents: {e}", exc_info=True)
+            processing_time = (datetime.utcnow() - start_time).total_seconds()
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "message": f"Failed to index documents: {str(e)}",
+                    "indexed_count": 0,
+                    "total_count": len(documents),
+                    "processing_time": processing_time
+                }
+            )
         
         if not success:
-            raise HTTPException(status_code=500, detail="Failed to index documents")
+            processing_time = (datetime.utcnow() - start_time).total_seconds()
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "message": "Failed to index documents",
+                    "indexed_count": 0,
+                    "total_count": len(documents),
+                    "processing_time": processing_time
+                }
+            )
         
         processing_time = (datetime.utcnow() - start_time).total_seconds()
         
-        return IndexResponse(
-            success=True,
-            message=f"Successfully indexed {len(documents)} documents",
-            documents_indexed=len(documents),
-            processing_time=processing_time
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": f"Successfully indexed {len(documents)} documents",
+                "indexed_count": len(documents),
+                "total_count": len(documents),
+                "processing_time": processing_time
+            }
         )
         
     except Exception as e:
-        logger.error(f"Indexing error: {e}")
-        raise HTTPException(status_code=500, detail=f"Indexing failed: {str(e)}")
+        logger.error(f"Indexing error: {e}", exc_info=True)
+        processing_time = (datetime.utcnow() - start_time).total_seconds()
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": f"Indexing failed: {str(e)}",
+                "indexed_count": 0,
+                "total_count": 0,
+                "processing_time": processing_time
+            }
+        )
 
 
 @app.delete("/collection")
