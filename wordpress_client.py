@@ -298,17 +298,24 @@ class WordPressContentFetcher:
             types_response.raise_for_status()
             types_data = types_response.json()
             
-            # Filter to only public post types (include built-in types)
+            # Filter to only post types that are available in REST API
             public_types = []
             type_info_map = {}  # Store type info for REST base lookup
             
+            logger.info(f"Analyzing {len(types_data)} post types from WordPress API...")
+            
             for post_type, info in types_data.items():
-                # Include if public AND shown in REST
-                if info.get('public', False) and info.get('rest_base'):
+                logger.info(f"Checking post type '{post_type}': public={info.get('public')}, show_in_rest={info.get('show_in_rest')}, rest_base={info.get('rest_base')}")
+                
+                # Include if it has a rest_base (means it's available in REST API)
+                # OR if it's public (we'll try to fetch it anyway)
+                if info.get('rest_base') or info.get('show_in_rest'):
                     public_types.append(post_type)
                     type_info_map[post_type] = info
                     rest_base = info.get('rest_base', post_type)
-                    logger.info(f"Including post type: '{post_type}' with REST base: '{rest_base}' (public: {info.get('public')}, show_in_rest: {info.get('show_in_rest')})")
+                    logger.info(f"✅ INCLUDING post type: '{post_type}' with REST base: '{rest_base}'")
+                else:
+                    logger.info(f"⏭️  SKIPPING post type: '{post_type}' (no REST API support)")
             
             # Ensure posts and pages are always included (fallback)
             if 'post' not in public_types:
@@ -320,7 +327,8 @@ class WordPressContentFetcher:
                 type_info_map['page'] = {'rest_base': 'pages'}
                 logger.warning("'page' type not found in types API, adding manually")
             
-            logger.info(f"Final public post types to index: {public_types}")
+            logger.info(f"✨ FINAL POST TYPES TO INDEX: {public_types}")
+            logger.info(f"📊 Total post types to fetch: {len(public_types)}")
             
             # Fetch content from each post type
             for post_type in public_types:
