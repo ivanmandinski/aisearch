@@ -86,20 +86,39 @@ async def startup_event():
     try:
         logger.info("Starting hybrid search service...")
         
-        # Initialize services
-        search_system = SimpleHybridSearch()
-        llm_client = CerebrasLLM()
-        wp_client = WordPressContentFetcher()
+        # Initialize services with error handling for each
+        try:
+            logger.info("Initializing search system...")
+            search_system = SimpleHybridSearch()
+            logger.info("Search system initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize search system: {e}")
+            # Don't raise - allow app to start without search system
         
-        # Test connections
-        if not llm_client.test_connection():
-            logger.warning("Cerebras LLM connection test failed")
+        try:
+            logger.info("Initializing LLM client...")
+            llm_client = CerebrasLLM()
+            if not llm_client.test_connection():
+                logger.warning("Cerebras LLM connection test failed - continuing anyway")
+            else:
+                logger.info("LLM client initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize LLM client: {e}")
+            # Don't raise - allow app to start without LLM
         
-        logger.info("Hybrid search service started successfully")
+        try:
+            logger.info("Initializing WordPress client...")
+            wp_client = WordPressContentFetcher()
+            logger.info("WordPress client initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize WordPress client: {e}")
+            # Don't raise - allow app to start without WP client
+        
+        logger.info("Hybrid search service startup completed")
         
     except Exception as e:
-        logger.error(f"Error during startup: {e}")
-        raise
+        logger.error(f"Unexpected error during startup: {e}")
+        # Don't raise - allow app to start even with errors
 
 
 # Shutdown event
@@ -172,32 +191,55 @@ async def health_check():
     )
 
 
-@app.post("/search", response_model=SearchResponse)
+@app.post("/search")
 async def search(request: SearchRequest):
     """Perform hybrid search on indexed content."""
-    if not search_system:
-        raise HTTPException(status_code=503, detail="Search service not initialized")
-    
     start_time = datetime.utcnow()
     
     try:
-        # Process query with LLM if available
+        # Check if search system is initialized
+        if not search_system:
+            logger.error("Search system not initialized")
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False,
+                    "error": "Search service not initialized. Please check Railway logs for initialization errors.",
+                    "results": [],
+                    "metadata": {
+                        "query": request.query,
+                        "response_time": 0,
+                        "status_code": 503
+                    }
+                }
+            )
+        
+        # Process query with LLM if available (optional)
         query_analysis = None
+        search_query = request.query
+        
         if llm_client:
-            query_analysis = await llm_client.process_query_async(request.query)
-            search_query = query_analysis.get("rewritten_query", request.query)
-        else:
-            search_query = request.query
+            try:
+                query_analysis = await llm_client.process_query_async(request.query)
+                search_query = query_analysis.get("rewritten_query", request.query)
+            except Exception as e:
+                logger.warning(f"Query analysis failed: {e} - using original query")
         
         # Perform search
         if request.include_answer:
-            result = await search_system.search_with_answer(
-                search_query, 
-                limit=request.limit, 
-                custom_instructions=request.ai_instructions
-            )
-            results = result.get('sources', [])
-            answer = result.get('answer')
+            try:
+                result = await search_system.search_with_answer(
+                    search_query, 
+                    limit=request.limit, 
+                    custom_instructions=request.ai_instructions
+                )
+                results = result.get('sources', [])
+                answer = result.get('answer')
+            except Exception as e:
+                logger.error(f"Search with answer failed: {e}")
+                # Fallback to basic search
+                results = await search_system.search(search_query, limit=request.limit)
+                answer = None
         else:
             results = await search_system.search(search_query, limit=request.limit)
             answer = None
@@ -218,8 +260,21 @@ async def search(request: SearchRequest):
         )
         
     except Exception as e:
-        logger.error(f"Search error: {e}")
-        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+        logger.error(f"Search error: {e}", exc_info=True)
+        processing_time = (datetime.utcnow() - start_time).total_seconds()
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": f"Search failed: {str(e)}",
+                "results": [],
+                "metadata": {
+                    "query": request.query,
+                    "response_time": processing_time * 1000,  # Convert to milliseconds
+                    "status_code": 500
+                }
+            }
+        )
 
 
 @app.post("/index", response_model=IndexResponse)
