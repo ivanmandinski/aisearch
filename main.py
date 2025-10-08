@@ -474,6 +474,101 @@ async def index_content(request: IndexRequest, background_tasks: BackgroundTasks
         )
 
 
+@app.post("/index-single")
+async def index_single_document(request: dict):
+    """Index a single document (for auto-indexing)."""
+    if not search_system:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "message": "Search service not initialized"
+            }
+        )
+    
+    try:
+        document = request.get('document')
+        if not document:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "message": "No document provided"
+                }
+            )
+        
+        logger.info(f"Auto-indexing single document: {document.get('title', 'Unknown')}")
+        
+        # Index the single document
+        success = await search_system.index_documents([document])
+        
+        if success:
+            return JSONResponse(
+                content={
+                    "success": True,
+                    "message": f"Successfully indexed: {document.get('title', 'document')}"
+                }
+            )
+        else:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "message": "Failed to index document"
+                }
+            )
+            
+    except Exception as e:
+        logger.error(f"Single document index error: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": f"Indexing failed: {str(e)}"
+            }
+        )
+
+
+@app.delete("/delete-document/{document_id}")
+async def delete_document(document_id: str):
+    """Delete a single document from the index."""
+    if not search_system:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "message": "Search service not initialized"
+            }
+        )
+    
+    try:
+        logger.info(f"Deleting document from index: {document_id}")
+        
+        # Delete from Qdrant if available
+        if search_system.qdrant_manager:
+            search_system.qdrant_manager.delete_points([document_id])
+        
+        # Remove from local cache
+        search_system.documents = [d for d in search_system.documents if d.get('id') != document_id]
+        
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": f"Successfully deleted document: {document_id}"
+            }
+        )
+            
+    except Exception as e:
+        logger.error(f"Document deletion error: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": f"Deletion failed: {str(e)}"
+            }
+        )
+
+
 @app.delete("/collection")
 async def delete_collection():
     """Delete the search collection."""
