@@ -10,30 +10,55 @@ from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import json
 from config import settings
-from qdrant_manager import QdrantManager
-from cerebras_llm import CerebrasLLM
 
 logger = logging.getLogger(__name__)
+
+# Try to import optional dependencies
+try:
+    from qdrant_manager import QdrantManager
+    QDRANT_AVAILABLE = True
+except ImportError as e:
+    logging.error(f"Failed to import QdrantManager: {e}")
+    QdrantManager = None
+    QDRANT_AVAILABLE = False
+
+try:
+    from cerebras_llm import CerebrasLLM
+    CEREBRAS_AVAILABLE = True
+except ImportError as e:
+    logging.error(f"Failed to import CerebrasLLM: {e}")
+    CerebrasLLM = None
+    CEREBRAS_AVAILABLE = False
 
 
 class SimpleHybridSearch:
     """Simplified hybrid search implementation."""
     
     def __init__(self):
-        try:
-            logger.info("Initializing QdrantManager...")
-            self.qdrant_manager = QdrantManager()
-            logger.info("QdrantManager initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize QdrantManager: {e}")
+        # Initialize Qdrant if available
+        if QDRANT_AVAILABLE and QdrantManager is not None:
+            try:
+                logger.info("Initializing QdrantManager...")
+                self.qdrant_manager = QdrantManager()
+                logger.info("QdrantManager initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize QdrantManager: {e}")
+                self.qdrant_manager = None
+        else:
+            logger.warning("Qdrant not available - using fallback search only")
             self.qdrant_manager = None
         
-        try:
-            logger.info("Initializing CerebrasLLM...")
-            self.llm_client = CerebrasLLM()
-            logger.info("CerebrasLLM initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize CerebrasLLM: {e}")
+        # Initialize Cerebras LLM if available
+        if CEREBRAS_AVAILABLE and CerebrasLLM is not None:
+            try:
+                logger.info("Initializing CerebrasLLM...")
+                self.llm_client = CerebrasLLM()
+                logger.info("CerebrasLLM initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize CerebrasLLM: {e}")
+                self.llm_client = None
+        else:
+            logger.warning("Cerebras LLM not available - AI answers disabled")
             self.llm_client = None
         
         self.tfidf_vectorizer = TfidfVectorizer(

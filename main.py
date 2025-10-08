@@ -12,9 +12,25 @@ from datetime import datetime
 import uvicorn
 
 from config import settings
-from wordpress_client import WordPressContentFetcher
-from simple_hybrid_search import SimpleHybridSearch
-from cerebras_llm import CerebrasLLM
+
+# Try to import components with error handling
+try:
+    from wordpress_client import WordPressContentFetcher
+except ImportError as e:
+    logging.error(f"Failed to import WordPressContentFetcher: {e}")
+    WordPressContentFetcher = None
+
+try:
+    from simple_hybrid_search import SimpleHybridSearch
+except ImportError as e:
+    logging.error(f"Failed to import SimpleHybridSearch: {e}")
+    SimpleHybridSearch = None
+
+try:
+    from cerebras_llm import CerebrasLLM
+except ImportError as e:
+    logging.error(f"Failed to import CerebrasLLM: {e}")
+    CerebrasLLM = None
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -87,32 +103,41 @@ async def startup_event():
         logger.info("Starting hybrid search service...")
         
         # Initialize services with error handling for each
-        try:
-            logger.info("Initializing search system...")
-            search_system = SimpleHybridSearch()
-            logger.info("Search system initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize search system: {e}")
-            # Don't raise - allow app to start without search system
+        if SimpleHybridSearch is not None:
+            try:
+                logger.info("Initializing search system...")
+                search_system = SimpleHybridSearch()
+                logger.info("Search system initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize search system: {e}", exc_info=True)
+                # Don't raise - allow app to start without search system
+        else:
+            logger.error("SimpleHybridSearch class not available - search disabled")
         
-        try:
-            logger.info("Initializing LLM client...")
-            llm_client = CerebrasLLM()
-            if not llm_client.test_connection():
-                logger.warning("Cerebras LLM connection test failed - continuing anyway")
-            else:
-                logger.info("LLM client initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize LLM client: {e}")
-            # Don't raise - allow app to start without LLM
+        if CerebrasLLM is not None:
+            try:
+                logger.info("Initializing LLM client...")
+                llm_client = CerebrasLLM()
+                if not llm_client.test_connection():
+                    logger.warning("Cerebras LLM connection test failed - continuing anyway")
+                else:
+                    logger.info("LLM client initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize LLM client: {e}", exc_info=True)
+                # Don't raise - allow app to start without LLM
+        else:
+            logger.warning("CerebrasLLM class not available - AI answers disabled")
         
-        try:
-            logger.info("Initializing WordPress client...")
-            wp_client = WordPressContentFetcher()
-            logger.info("WordPress client initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize WordPress client: {e}")
-            # Don't raise - allow app to start without WP client
+        if WordPressContentFetcher is not None:
+            try:
+                logger.info("Initializing WordPress client...")
+                wp_client = WordPressContentFetcher()
+                logger.info("WordPress client initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize WordPress client: {e}", exc_info=True)
+                # Don't raise - allow app to start without WP client
+        else:
+            logger.warning("WordPressContentFetcher class not available - indexing disabled")
         
         logger.info("Hybrid search service startup completed")
         
