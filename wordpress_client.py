@@ -349,29 +349,63 @@ class WordPressContentFetcher:
                                 }
                             )
                             
+                            # Check response status
                             if response.status_code == 404:
-                                logger.warning(f"Endpoint {endpoint} returned 404 for {post_type}")
+                                logger.info(f"No more pages for '{post_type}' (404 on page {page})")
                                 break
+                            elif response.status_code == 400:
+                                # Check if it's the "invalid page number" error
+                                try:
+                                    error_data = response.json()
+                                    if error_data.get('code') == 'rest_post_invalid_page_number':
+                                        logger.info(f"Reached last page for '{post_type}' (page {page} doesn't exist)")
+                                        break
+                                except:
+                                    pass
+                                # If it's a different 400 error, try to continue
+                                logger.warning(f"400 error for '{post_type}' page {page}, but not 'invalid page number' - continuing")
                             
                             response.raise_for_status()
                             
+                            # Get pagination info from headers
+                            total_pages = response.headers.get('X-WP-TotalPages', '0')
+                            total_items = response.headers.get('X-WP-Total', '0')
+                            
+                            logger.info(f"'{post_type}' - Page {page}/{total_pages}, Total items: {total_items}")
+                            
+                            # Check if we've reached the last page according to headers
+                            if total_pages and page >= int(total_pages):
+                                logger.info(f"Reached last page for '{post_type}' according to headers (page {page} of {total_pages})")
+                                # Process this last page, then break after
+                                
                         except httpx.HTTPStatusError as e:
-                            if e.response.status_code == 404:
+                            if e.response.status_code == 400:
+                                # Check if it's the invalid page number error
+                                try:
+                                    error_data = e.response.json()
+                                    if error_data.get('code') == 'rest_post_invalid_page_number':
+                                        logger.info(f"All '{post_type}' pages fetched (invalid page number on page {page})")
+                                        break
+                                except:
+                                    pass
+                                logger.warning(f"400 error for '{post_type}': {e}")
+                                break
+                            elif e.response.status_code == 404:
                                 logger.warning(f"Endpoint not found for '{post_type}': {endpoint}")
-                                logger.warning(f"This post type may not be exposed to REST API or uses a different endpoint")
                                 break
                             elif e.response.status_code == 401:
-                                logger.error(f"Authentication required for '{post_type}' - check WordPress credentials")
+                                logger.error(f"Authentication required for '{post_type}'")
                                 break
                             else:
-                                logger.error(f"HTTP error {e.response.status_code} for '{post_type}': {e}")
+                                logger.error(f"HTTP {e.response.status_code} for '{post_type}': {e}")
                                 break
                         except Exception as e:
                             logger.error(f"Error fetching page {page} of '{post_type}': {e}")
                             break
                         
                         batch_items = response.json()
-                        if not batch_items:
+                        if not batch_items or len(batch_items) == 0:
+                            logger.info(f"Empty response for '{post_type}' page {page}, stopping")
                             break
                         
                         # Process items one by one
@@ -387,12 +421,19 @@ class WordPressContentFetcher:
                                 logger.error(f"Error processing {post_type} item {item.get('id', 'unknown')}: {e}")
                                 continue
                         
-                        page += 1
-                        logger.info(f"Fetched {len(batch_items)} {post_type} items (page {page-1}), type total: {post_type_count}")
+                        logger.info(f"Fetched {len(batch_items)} {post_type} items (page {page}), type total: {post_type_count}")
                         
-                        # Limit to prevent infinite loops (increased limit)
+                        # Check if this was the last page based on headers
+                        if total_pages and page >= int(total_pages):
+                            logger.info(f"This was the last page for '{post_type}' ({page} of {total_pages})")
+                            break
+                        
+                        # Move to next page
+                        page += 1
+                        
+                        # Safety limit to prevent infinite loops
                         if page > 100:  # Max 100 pages per type = 5000 items per type
-                            logger.warning(f"Reached page limit for {post_type}, stopping pagination")
+                            logger.warning(f"Reached safety limit for '{post_type}', stopping at page {page}")
                             break
                     
                     # Log summary for this post type
