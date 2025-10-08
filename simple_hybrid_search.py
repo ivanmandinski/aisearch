@@ -20,8 +20,22 @@ class SimpleHybridSearch:
     """Simplified hybrid search implementation."""
     
     def __init__(self):
-        self.qdrant_manager = QdrantManager()
-        self.llm_client = CerebrasLLM()
+        try:
+            logger.info("Initializing QdrantManager...")
+            self.qdrant_manager = QdrantManager()
+            logger.info("QdrantManager initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize QdrantManager: {e}")
+            self.qdrant_manager = None
+        
+        try:
+            logger.info("Initializing CerebrasLLM...")
+            self.llm_client = CerebrasLLM()
+            logger.info("CerebrasLLM initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize CerebrasLLM: {e}")
+            self.llm_client = None
+        
         self.tfidf_vectorizer = TfidfVectorizer(
             max_features=10000,
             stop_words='english',
@@ -202,7 +216,15 @@ class SimpleHybridSearch:
                 }
             
             # Generate answer using LLM with custom instructions
-            answer = self.llm_client.generate_answer(query, results, custom_instructions)
+            if self.llm_client:
+                try:
+                    answer = self.llm_client.generate_answer(query, results, custom_instructions)
+                except Exception as e:
+                    logger.error(f"LLM answer generation failed: {e}")
+                    answer = "I found relevant results but couldn't generate a summary at this time."
+            else:
+                logger.warning("LLM client not available, skipping answer generation")
+                answer = "LLM service is currently unavailable. Please review the search results below."
             
             return {
                 'query': query,
