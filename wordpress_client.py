@@ -298,25 +298,32 @@ class WordPressContentFetcher:
             types_response.raise_for_status()
             types_data = types_response.json()
             
-            # Filter to only public post types
+            # Filter to only public post types (include built-in types)
             public_types = []
             for post_type, info in types_data.items():
-                if info.get('public', False) and not info.get('_builtin', False):
+                # Include if public (including built-in types like post and page)
+                if info.get('public', False):
                     public_types.append(post_type)
+                    logger.info(f"Including post type: {post_type} (public: {info.get('public')}, builtin: {info.get('_builtin', False)})")
             
-            # Always include posts and pages
+            # Ensure posts and pages are always included (fallback)
             if 'post' not in public_types:
                 public_types.append('post')
+                logger.warning("'post' type not found in types API, adding manually")
             if 'page' not in public_types:
                 public_types.append('page')
+                logger.warning("'page' type not found in types API, adding manually")
             
-            logger.info(f"Found public post types: {public_types}")
+            logger.info(f"Final public post types to index: {public_types}")
             
             # Fetch content from each post type
             for post_type in public_types:
                 try:
                     page = 1
                     per_page = 50
+                    post_type_count = 0  # Track count per post type
+                    
+                    logger.info(f"Starting to fetch '{post_type}' items...")
                     
                     while True:
                         # Use different endpoints based on post type
@@ -350,16 +357,21 @@ class WordPressContentFetcher:
                                     # Ensure type is set correctly
                                     cleaned_item['type'] = post_type
                                     all_content.append(cleaned_item)
+                                    post_type_count += 1
                             except Exception as e:
                                 logger.error(f"Error processing {post_type} item {item.get('id', 'unknown')}: {e}")
                                 continue
                         
                         page += 1
-                        logger.info(f"Fetched {len(batch_items)} {post_type} items (page {page-1})")
+                        logger.info(f"Fetched {len(batch_items)} {post_type} items (page {page-1}), type total: {post_type_count}")
                         
                         # Limit to prevent infinite loops
-                        if page > 20:  # Max 20 pages per type
+                        if page > 20:  # Max 20 pages per type = 1000 items per type
+                            logger.warning(f"Reached page limit for {post_type}, stopping pagination")
                             break
+                    
+                    # Log summary for this post type
+                    logger.info(f"Completed fetching '{post_type}': {post_type_count} items indexed")
                     
                 except Exception as e:
                     logger.error(f"Error fetching post type {post_type}: {e}")
@@ -368,7 +380,15 @@ class WordPressContentFetcher:
         except Exception as e:
             logger.error(f"Error fetching post types: {e}")
         
+        # Log breakdown by type
+        type_counts = {}
+        for item in all_content:
+            item_type = item.get('type', 'unknown')
+            type_counts[item_type] = type_counts.get(item_type, 0) + 1
+        
         logger.info(f"Total items from all post types fetched: {len(all_content)}")
+        logger.info(f"Breakdown by type: {type_counts}")
+        
         return all_content
 
     async def get_all_content(self) -> List[Dict[str, Any]]:
