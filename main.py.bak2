@@ -122,7 +122,7 @@ async def startup_event():
         if CerebrasLLM is not None:
             try:
                 logger.info("Initializing LLM client...")
-                llm_client = CerebrasLLM()
+        llm_client = CerebrasLLM()
                 if not llm_client.test_connection():
                     logger.warning("Cerebras LLM connection test failed - continuing anyway")
                 else:
