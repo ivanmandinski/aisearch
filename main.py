@@ -65,6 +65,10 @@ class SearchRequest(BaseModel):
     include_answer: bool = Field(default=False, description="Whether to include LLM-generated answer")
     filters: Optional[Dict[str, Any]] = Field(default=None, description="Search filters")
     ai_instructions: Optional[str] = Field(default=None, description="Custom AI instructions for answer generation")
+    # AI Reranking parameters
+    enable_ai_reranking: bool = Field(default=True, description="Whether to use AI reranking")
+    ai_weight: float = Field(default=0.7, ge=0.0, le=1.0, description="Weight for AI score (0-1)")
+    ai_reranking_instructions: str = Field(default="", description="Custom instructions for AI reranking")
 
 
 class SearchResponse(BaseModel):
@@ -270,7 +274,9 @@ async def search(request: SearchRequest):
             except Exception as e:
                 logger.warning(f"Query analysis failed: {e} - using original query")
         
-        # Perform search
+        # Perform search with AI reranking support
+        search_metadata = {}
+        
         if request.include_answer:
             try:
                 result = await search_system.search_with_answer(
@@ -283,10 +289,23 @@ async def search(request: SearchRequest):
             except Exception as e:
                 logger.error(f"Search with answer failed: {e}")
                 # Fallback to basic search
-                results = await search_system.search(search_query, limit=request.limit)
+                results, search_metadata = await search_system.search(
+                    query=search_query,
+                    limit=request.limit,
+                    enable_ai_reranking=request.enable_ai_reranking,
+                    ai_weight=request.ai_weight,
+                    ai_reranking_instructions=request.ai_reranking_instructions
+                )
                 answer = None
         else:
-            results = await search_system.search(search_query, limit=request.limit)
+            # Regular search with AI reranking
+            results, search_metadata = await search_system.search(
+                query=search_query,
+                limit=request.limit,
+                enable_ai_reranking=request.enable_ai_reranking,
+                ai_weight=request.ai_weight,
+                ai_reranking_instructions=request.ai_reranking_instructions
+            )
             answer = None
         
         # Apply filters if provided
@@ -306,7 +325,8 @@ async def search(request: SearchRequest):
                     "response_time": processing_time * 1000,  # Convert to milliseconds
                     "has_answer": answer is not None,
                     "answer": answer or "",
-                    "query_analysis": query_analysis
+                    "query_analysis": query_analysis,
+                    **search_metadata  # Include AI reranking metadata
                 }
             }
         )

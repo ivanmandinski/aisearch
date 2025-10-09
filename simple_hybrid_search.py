@@ -210,27 +210,89 @@ class SimpleHybridSearch:
             logger.error(f"Error indexing documents: {e}")
             return False
     
-    async def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Perform TF-IDF only search (fallback when embeddings fail)."""
+    async def search(
+        self, 
+        query: str, 
+        limit: int = 10,
+        enable_ai_reranking: bool = True,
+        ai_weight: float = 0.7,
+        ai_reranking_instructions: str = ""
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """
+        Perform search with optional AI reranking.
+        
+        Args:
+            query: Search query
+            limit: Number of results to return
+            enable_ai_reranking: Whether to use AI reranking
+            ai_weight: Weight for AI score (0-1), higher = more AI influence
+            ai_reranking_instructions: Custom instructions for AI reranking
+            
+        Returns:
+            (results, metadata) tuple
+        """
         try:
+            # Step 1: Get initial candidates using TF-IDF (get more if using AI reranking)
+            initial_limit = min(limit * 3, 50) if enable_ai_reranking else limit
+            
             # If we have TF-IDF fitted, use it for search
             if self.tfidf_matrix is not None and len(self.documents) > 0:
-                logger.info("Using TF-IDF search as fallback")
-                return self._tfidf_search(query, limit)
+                logger.info(f"Using TF-IDF search (getting {initial_limit} candidates)")
+                candidates = self._tfidf_search(query, initial_limit)
+            else:
+                # Fallback to simple text search
+                logger.info(f"Using simple text search (getting {initial_limit} candidates)")
+                candidates = self._simple_text_search(query, initial_limit)
             
-            # Fallback to simple text search
-            logger.info("Using simple text search as fallback")
-            return self._simple_text_search(query, limit)
+            if not candidates:
+                return [], {'ai_reranking_used': False, 'message': 'No results found'}
+            
+            # Step 2: AI Reranking (if enabled and LLM client available)
+            if enable_ai_reranking and self.llm_client:
+                logger.info(f"🤖 Applying AI reranking to {len(candidates)} results...")
+                
+                # Rerank top 20 candidates with AI (or fewer if we have less)
+                top_candidates = candidates[:min(20, len(candidates))]
+                
+                try:
+                    reranking_result = self.llm_client.rerank_results(
+                        query=query,
+                        results=top_candidates,
+                        custom_instructions=ai_reranking_instructions,
+                        ai_weight=ai_weight
+                    )
+                    
+                    reranked = reranking_result['results']
+                    metadata = reranking_result['metadata']
+                    
+                    # Return top N after reranking
+                    logger.info(f"✅ AI reranking successful, returning top {limit} results")
+                    return reranked[:limit], metadata
+                    
+                except Exception as e:
+                    logger.error(f"AI reranking failed: {e}, falling back to TF-IDF results")
+                    # Fall through to return TF-IDF results
+            else:
+                if not enable_ai_reranking:
+                    logger.info("AI reranking disabled, using TF-IDF results")
+                elif not self.llm_client:
+                    logger.warning("LLM client not available, using TF-IDF results")
+            
+            # No AI reranking, return TF-IDF results
+            return candidates[:limit], {
+                'ai_reranking_used': False,
+                'reason': 'AI reranking disabled or unavailable'
+            }
             
         except Exception as e:
-            logger.error(f"Error performing search: {e}")
-            return []
+            logger.error(f"Error in search: {e}")
+            return [], {'error': str(e)}
     
     async def search_with_answer(self, query: str, limit: int = 5, custom_instructions: str = "") -> Dict[str, Any]:
         """Search and generate AI answer."""
         try:
-            # Get search results
-            results = await self.search(query, limit)
+            # Get search results (without AI reranking for answer generation to save cost)
+            results, _ = await self.search(query, limit, enable_ai_reranking=False)
             
             if not results:
                 return {
@@ -359,6 +421,11 @@ class SimpleHybridSearch:
                         'title': doc['title'],
                         'url': doc['url'],
                         'excerpt': doc['excerpt'],
+                        'type': doc.get('type', 'post'),  # Include post type!
+                        'date': doc.get('date', ''),
+                        'author': doc.get('author', ''),
+                        'categories': doc.get('categories', []),
+                        'tags': doc.get('tags', []),
                         'score': float(score),
                         'relevance': 'high' if score > 0.1 else 'medium' if score > 0.05 else 'low'
                     }
@@ -397,6 +464,11 @@ class SimpleHybridSearch:
                         'title': doc['title'],
                         'url': doc['url'],
                         'excerpt': doc['excerpt'],
+                        'type': doc.get('type', 'post'),  # Include post type!
+                        'date': doc.get('date', ''),
+                        'author': doc.get('author', ''),
+                        'categories': doc.get('categories', []),
+                        'tags': doc.get('tags', []),
                         'score': float(score),
                         'relevance': 'high' if score >= 3 else 'medium' if score >= 2 else 'low'
                     }
