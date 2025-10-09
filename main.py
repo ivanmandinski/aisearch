@@ -111,7 +111,7 @@ async def startup_event():
         if SimpleHybridSearch is not None:
             try:
                 logger.info("Initializing search system...")
-                search_system = SimpleHybridSearch()
+        search_system = SimpleHybridSearch()
                 logger.info("Search system initialized successfully")
             except Exception as e:
                 logger.error(f"Failed to initialize search system: {e}", exc_info=True)
@@ -122,7 +122,7 @@ async def startup_event():
         if CerebrasLLM is not None:
             try:
                 logger.info("Initializing LLM client...")
-                llm_client = CerebrasLLM()
+        llm_client = CerebrasLLM()
                 if not llm_client.test_connection():
                     logger.warning("Cerebras LLM connection test failed - continuing anyway")
                 else:
@@ -173,10 +173,10 @@ async def root():
     """Root endpoint with API information."""
     return JSONResponse(
         content={
-            "message": "Hybrid Search API",
+        "message": "Hybrid Search API",
             "version": "1.0.0",
             "status": "running",
-            "docs": "/docs",
+        "docs": "/docs",
             "health": "/health",
             "endpoints": {
                 "search": "POST /search",
@@ -196,8 +196,8 @@ async def health_check():
         # Check Qdrant connection
         if search_system:
             try:
-                stats = search_system.get_stats()
-                services_status["qdrant"] = "healthy" if stats.get('total_documents', 0) >= 0 else "unhealthy"
+            stats = search_system.get_stats()
+            services_status["qdrant"] = "healthy" if stats.get('total_documents', 0) >= 0 else "unhealthy"
             except Exception as e:
                 services_status["qdrant"] = f"error: {str(e)}"
         else:
@@ -207,7 +207,7 @@ async def health_check():
         if llm_client:
             try:
                 if llm_client.test_connection():
-                    services_status["cerebras_llm"] = "healthy"
+            services_status["cerebras_llm"] = "healthy"
                 else:
                     services_status["cerebras_llm"] = "connection_failed"
             except Exception as e:
@@ -269,8 +269,8 @@ async def search(request: SearchRequest):
         
         if llm_client:
             try:
-                query_analysis = await llm_client.process_query_async(request.query)
-                search_query = query_analysis.get("rewritten_query", request.query)
+            query_analysis = await llm_client.process_query_async(request.query)
+            search_query = query_analysis.get("rewritten_query", request.query)
             except Exception as e:
                 logger.warning(f"Query analysis failed: {e} - using original query")
         
@@ -279,13 +279,13 @@ async def search(request: SearchRequest):
         
         if request.include_answer:
             try:
-                result = await search_system.search_with_answer(
-                    search_query, 
-                    limit=request.limit, 
-                    custom_instructions=request.ai_instructions
-                )
-                results = result.get('sources', [])
-                answer = result.get('answer')
+            result = await search_system.search_with_answer(
+                search_query, 
+                limit=request.limit, 
+                custom_instructions=request.ai_instructions
+            )
+            results = result.get('sources', [])
+            answer = result.get('answer')
             except Exception as e:
                 logger.error(f"Search with answer failed: {e}")
                 # Fallback to basic search
@@ -384,8 +384,8 @@ async def index_content(request: IndexRequest, background_tasks: BackgroundTasks
         
         # Check if index already exists
         try:
-            stats = search_system.get_stats()
-            if stats.get('total_documents', 0) > 0 and not request.force_reindex:
+        stats = search_system.get_stats()
+        if stats.get('total_documents', 0) > 0 and not request.force_reindex:
                 processing_time = (datetime.utcnow() - start_time).total_seconds()
                 return JSONResponse(
                     content={
@@ -439,7 +439,7 @@ async def index_content(request: IndexRequest, background_tasks: BackgroundTasks
         # Index documents
         logger.info(f"Indexing {len(documents)} documents...")
         try:
-            success = await search_system.index_documents(documents)
+        success = await search_system.index_documents(documents)
         except Exception as e:
             logger.error(f"Failed to index documents: {e}", exc_info=True)
             processing_time = (datetime.utcnow() - start_time).total_seconds()
@@ -546,6 +546,110 @@ async def index_single_document(request: dict):
                 "success": False,
                 "message": f"Indexing failed: {str(e)}"
             }
+        )
+
+
+@app.get("/suggest")
+async def get_suggestions(query: str = Query(..., min_length=2), limit: int = Query(default=5, ge=1, le=10)):
+    """
+    Get search suggestions based on partial query.
+    Returns 2-5 suggested queries using AI.
+    """
+    try:
+        if not query or len(query) < 2:
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "suggestions": [],
+                    "message": "Query too short"
+                },
+                status_code=400
+            )
+        
+        suggestions = []
+        
+        # Method 1: Use LLM to generate intelligent suggestions
+        if llm_client:
+            try:
+                logger.info(f"Generating AI suggestions for: '{query}'")
+                
+                prompt = f"""Generate 3-5 search query suggestions based on this partial query: "{query}"
+
+The suggestions should be:
+- Complete, natural search queries
+- Related to the partial query
+- Progressively more specific
+- What a user might actually search for
+
+Return ONLY a JSON array of 3-5 strings:
+["suggestion 1", "suggestion 2", "suggestion 3"]
+
+Examples:
+- Partial: "energy" → ["energy audit", "energy efficiency", "energy consulting"]
+- Partial: "landfill" → ["landfill gas", "landfill management", "landfill monitoring"]
+- Partial: "reduce" → ["reduce costs", "reduce emissions", "reduce waste"]
+"""
+                
+                response = llm_client.client.chat.completions.create(
+                    model=llm_client.model,
+                    messages=[
+                        {"role": "system", "content": "You are a search suggestion assistant. Return only JSON."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.3,
+                    max_tokens=200
+                )
+                
+                response_text = response.choices[0].message.content.strip()
+                
+                # Extract JSON
+                if "```json" in response_text:
+                    response_text = response_text.split("```json")[1].split("```")[0].strip()
+                elif "```" in response_text:
+                    response_text = response_text.split("```")[1].split("```")[0].strip()
+                
+                suggestions = json.loads(response_text)
+                
+                # Validate and clean suggestions
+                suggestions = [s.strip() for s in suggestions if isinstance(s, str) and len(s) >= 3][:limit]
+                
+                logger.info(f"Generated {len(suggestions)} AI suggestions")
+                
+            except Exception as e:
+                logger.error(f"Error generating AI suggestions: {e}")
+                # Fall through to simple suggestions
+        
+        # Method 2: Fallback to simple prefix matching (if AI fails or unavailable)
+        if not suggestions and search_system:
+            try:
+                # Generate simple completions
+                suggestions = [
+                    f"{query} services",
+                    f"{query} guide",
+                    f"{query} consulting"
+                ][:limit]
+                logger.info(f"Using fallback suggestions")
+            except Exception as e:
+                logger.error(f"Error generating fallback suggestions: {e}")
+        
+        return JSONResponse(
+            content={
+                "success": True,
+                "query": query,
+                "suggestions": suggestions,
+                "count": len(suggestions)
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Suggestion error: {e}")
+        return JSONResponse(
+            content={
+                "success": False,
+                "suggestions": [],
+                "error": str(e)
+            },
+            status_code=500
         )
 
 
