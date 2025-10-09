@@ -249,16 +249,15 @@ class SimpleHybridSearch:
             
             # Step 2: AI Reranking (if enabled and LLM client available)
             if enable_ai_reranking and self.llm_client:
-                # Rerank ALL candidates for better accuracy (not just top 20)
-                num_to_rerank = min(len(candidates), 50)  # Rerank up to 50 results
-                logger.info(f"🤖 Applying AI reranking to {num_to_rerank} results...")
+                logger.info(f"🤖 Applying AI reranking to {len(candidates)} results...")
                 
-                candidates_to_rerank = candidates[:num_to_rerank]
+                # Rerank top 20 candidates with AI (or fewer if we have less)
+                top_candidates = candidates[:min(20, len(candidates))]
                 
                 try:
                     reranking_result = self.llm_client.rerank_results(
                         query=query,
-                        results=candidates_to_rerank,
+                        results=top_candidates,
                         custom_instructions=ai_reranking_instructions,
                         ai_weight=ai_weight
                     )
@@ -266,10 +265,9 @@ class SimpleHybridSearch:
                     reranked = reranking_result['results']
                     metadata = reranking_result['metadata']
                     
-                    # Return ALL reranked results (not limited)
-                    # WordPress will handle limiting and pagination
-                    logger.info(f"✅ AI reranking successful, returning {len(reranked)} results (WordPress will limit to {limit})")
-                    return reranked, metadata
+                    # Return top N after reranking
+                    logger.info(f"✅ AI reranking successful, returning top {limit} results")
+                    return reranked[:limit], metadata
                     
                 except Exception as e:
                     logger.error(f"AI reranking failed: {e}, falling back to TF-IDF results")
