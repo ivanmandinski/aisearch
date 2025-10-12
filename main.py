@@ -276,6 +276,7 @@ async def search(request: SearchRequest):
         
         # Perform search with AI reranking support
         search_metadata = {}
+        zero_result_data = None
         
         if request.include_answer:
             try:
@@ -312,24 +313,46 @@ async def search(request: SearchRequest):
         if request.filters:
             results = _apply_filters(results, request.filters)
         
+        # Handle zero results
+        if not results or len(results) == 0:
+            logger.warning(f"Zero results for query: {request.query}")
+            try:
+                from zero_result_handler import ZeroResultHandler
+                handler = ZeroResultHandler(llm_client=llm_client, search_system=search_system)
+                zero_result_data = await handler.handle_zero_results(request.query, request.filters)
+                
+                # Track zero result for analytics
+                handler.track_zero_result(request.query)
+                
+            except Exception as e:
+                logger.error(f"Error handling zero results: {e}")
+                zero_result_data = {
+                    'message': 'No results found. Try different keywords.',
+                    'suggestions': []
+                }
+        
         processing_time = (datetime.utcnow() - start_time).total_seconds()
         
         # Return JSON response directly (avoid Pydantic serialization issues)
-        return JSONResponse(
-            content={
-                "success": True,
-                "results": results,
-                "metadata": {
-                    "query": request.query,
-                    "total_results": len(results),
-                    "response_time": processing_time * 1000,  # Convert to milliseconds
-                    "has_answer": answer is not None,
-                    "answer": answer or "",
-                    "query_analysis": query_analysis,
-                    **search_metadata  # Include AI reranking metadata
-                }
+        response_content = {
+            "success": True,
+            "results": results,
+            "metadata": {
+                "query": request.query,
+                "total_results": len(results),
+                "response_time": processing_time * 1000,  # Convert to milliseconds
+                "has_answer": answer is not None,
+                "answer": answer or "",
+                "query_analysis": query_analysis,
+                **search_metadata  # Include AI reranking metadata
             }
-        )
+        }
+        
+        # Add zero-result handling data if applicable
+        if zero_result_data:
+            response_content["zero_result_handling"] = zero_result_data
+        
+        return JSONResponse(content=response_content)
         
     except Exception as e:
         logger.error(f"Search error: {e}", exc_info=True)
@@ -702,21 +725,45 @@ async def get_stats():
 
 @app.get("/suggest")
 async def get_suggestions(
-    query: str = Query(..., description="Partial query for suggestions"),
+    query: str = Query(..., description="Partial query for suggestions", min_length=2),
     limit: int = Query(default=5, ge=1, le=10, description="Maximum suggestions")
 ):
     """Get query suggestions based on partial input."""
-    if not llm_client:
-        raise HTTPException(status_code=503, detail="LLM service not available")
-    
     try:
-        suggestions = llm_client.expand_query(query)
+        # Import suggestion engine
+        from suggestions import SuggestionEngine
+        
+        # Initialize suggestion engine with LLM client
+        suggestion_engine = SuggestionEngine(llm_client=llm_client)
+        
+        # Get suggestions
+        suggestions = await suggestion_engine.get_suggestions(
+            partial_query=query,
+            limit=limit,
+            include_popular=True
+        )
+        
         return {
             "query": query,
-            "suggestions": suggestions[:limit]
+            "suggestions": suggestions,
+            "count": len(suggestions)
         }
+        
     except Exception as e:
         logger.error(f"Suggestions error: {e}")
+        # Fallback to simple expansion if available
+        if llm_client:
+            try:
+                fallback = llm_client.expand_query(query)
+                return {
+                    "query": query,
+                    "suggestions": fallback[:limit],
+                    "count": len(fallback[:limit]),
+                    "fallback": True
+                }
+            except:
+                pass
+        
         raise HTTPException(status_code=500, detail=f"Failed to get suggestions: {str(e)}")
 
 

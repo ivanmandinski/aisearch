@@ -1,12 +1,16 @@
 <?php
 /**
- * Plugin Name: SCS Engineers Hybrid Search
- * Plugin URI: https://www.scsengineers.com
- * Description: Replace WordPress native search with hybrid search powered by Qdrant, LlamaIndex, and Cerebras LLM for SCS Engineers.
- * Version: 1.0.0
- * Author: SCS Engineers
+ * Plugin Name: Hybrid Search
+ * Plugin URI: https://wordpress.org/plugins/hybrid-search
+ * Description: Professional hybrid search plugin powered by Qdrant, LlamaIndex, and Cerebras LLM.
+ * Version: 2.6.7
+ * Author: Hybrid Search Team
  * License: GPL v2 or later
- * Text Domain: scs-hybrid-search
+ * Text Domain: hybrid-search
+ * Requires at least: 5.0
+ * Tested up to: 6.4
+ * Requires PHP: 7.4
+ * Network: false
  */
 
 // Prevent direct access
@@ -15,385 +19,305 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('HYBRID_SEARCH_VERSION', '1.0.2');
+define('HYBRID_SEARCH_VERSION', '2.6.7');
 define('HYBRID_SEARCH_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('HYBRID_SEARCH_PLUGIN_PATH', plugin_dir_path(__FILE__));
+define('HYBRID_SEARCH_PLUGIN_FILE', __FILE__);
+define('HYBRID_SEARCH_PLUGIN_BASENAME', plugin_basename(__FILE__));
+
+// Autoloader for classes
+spl_autoload_register(function ($class) {
+    $prefix = 'HybridSearch\\';
+    $base_dir = HYBRID_SEARCH_PLUGIN_PATH . 'includes/';
+    
+    $len = strlen($prefix);
+    if (strncmp($prefix, $class, $len) !== 0) {
+        return;
+    }
+    
+    $relative_class = substr($class, $len);
+    $file = $base_dir . str_replace('\\', '/', $relative_class) . '.php';
+    
+    if (file_exists($file)) {
+        require $file;
+    }
+});
 
 /**
- * Main Hybrid Search Plugin Class
+ * Main Plugin Class
+ * 
+ * @package HybridSearch
+ * @since 2.0.0
  */
-class HybridSearchPlugin {
+final class HybridSearchPlugin {
     
-    private $api_url;
-    private $api_key;
-    private $enabled;
+    /**
+     * Plugin instance
+     * 
+     * @var HybridSearchPlugin
+     */
+    private static $instance = null;
     
-    public function __construct() {
+    /**
+     * Plugin components
+     * 
+     * @var array
+     */
+    private $components = [];
+    
+    /**
+     * Get plugin instance
+     * 
+     * @return HybridSearchPlugin
+     */
+    public static function getInstance() {
+        if (null === self::$instance) {
+            self::$instance = new self();
+        }
+        return self::$instance;
+    }
+    
+    /**
+     * Constructor
+     */
+    private function __construct() {
         $this->init();
     }
     
     /**
-     * Initialize the plugin
+     * Initialize plugin
+     * 
+     * @since 2.0.0
      */
     private function init() {
-        // Load plugin options
-        $this->load_options();
+        // Load dependencies
+        $this->loadDependencies();
+        
+        // Initialize components
+        $this->initComponents();
         
         // Register hooks
-        add_action('init', array($this, 'init_hooks'));
-        add_action('admin_menu', array($this, 'add_admin_menu'));
-        add_action('admin_init', array($this, 'register_settings'));
-        add_action('wp_enqueue_scripts', array($this, 'enqueue_scripts'));
-        add_action('wp_ajax_hybrid_search', array($this, 'handle_ajax_search'));
-        add_action('wp_ajax_nopriv_hybrid_search', array($this, 'handle_ajax_search'));
-        add_action('wp_ajax_test_hybrid_search_api', array($this, 'handle_test_api'));
+        $this->registerHooks();
         
-        // Replace default search
-        add_filter('posts_search', array($this, 'replace_search_query'), 10, 2);
-        add_filter('search_template', array($this, 'load_search_template'));
+        // Activation/Deactivation hooks
+        register_activation_hook(HYBRID_SEARCH_PLUGIN_FILE, [$this, 'activate']);
+        register_deactivation_hook(HYBRID_SEARCH_PLUGIN_FILE, [$this, 'deactivate']);
     }
     
     /**
-     * Load plugin options
+     * Load plugin dependencies
+     * 
+     * @since 2.0.0
      */
-    private function load_options() {
-        $this->api_url = get_option('hybrid_search_api_url', '');
-        $this->api_key = get_option('hybrid_search_api_key', '');
-        $this->enabled = get_option('hybrid_search_enabled', false);
+    private function loadDependencies() {
+        // Core classes
+        require_once HYBRID_SEARCH_PLUGIN_PATH . 'includes/Core/PluginManager.php';
+        require_once HYBRID_SEARCH_PLUGIN_PATH . 'includes/Core/Security.php';
+        require_once HYBRID_SEARCH_PLUGIN_PATH . 'includes/Core/Logger.php';
+        
+        // Database layer
+        require_once HYBRID_SEARCH_PLUGIN_PATH . 'includes/Database/DatabaseManager.php';
+        require_once HYBRID_SEARCH_PLUGIN_PATH . 'includes/Database/AnalyticsRepository.php';
+        require_once HYBRID_SEARCH_PLUGIN_PATH . 'includes/Database/CTRRepository.php';
+        
+        // API layer
+        require_once HYBRID_SEARCH_PLUGIN_PATH . 'includes/API/SearchAPI.php';
+        require_once HYBRID_SEARCH_PLUGIN_PATH . 'includes/API/APIClient.php';
+        
+        // Admin layer
+        require_once HYBRID_SEARCH_PLUGIN_PATH . 'includes/Admin/AdminManager.php';
+        require_once HYBRID_SEARCH_PLUGIN_PATH . 'includes/Admin/DashboardWidget.php';
+        
+        // AJAX layer
+        require_once HYBRID_SEARCH_PLUGIN_PATH . 'includes/AJAX/AJAXManager.php';
+        
+        // Frontend layer
+        require_once HYBRID_SEARCH_PLUGIN_PATH . 'includes/Frontend/FrontendManager.php';
+        require_once HYBRID_SEARCH_PLUGIN_PATH . 'includes/Frontend/ShortcodeManager.php';
+        
+        // Services
+        require_once HYBRID_SEARCH_PLUGIN_PATH . 'includes/Services/AnalyticsService.php';
+        require_once HYBRID_SEARCH_PLUGIN_PATH . 'includes/Services/CTRService.php';
+        require_once HYBRID_SEARCH_PLUGIN_PATH . 'includes/Services/CacheService.php';
+        require_once HYBRID_SEARCH_PLUGIN_PATH . 'includes/Services/SmartCacheService.php';
+        require_once HYBRID_SEARCH_PLUGIN_PATH . 'includes/Services/AutoIndexService.php';
     }
     
     /**
-     * Initialize hooks
+     * Initialize plugin components
+     * 
+     * @since 2.0.0
      */
-    public function init_hooks() {
-        // Add rewrite rules for search
-        add_rewrite_rule(
-            '^search/([^/]+)/?$',
-            'index.php?hybrid_search=1&s=$matches[1]',
-            'top'
+    private function initComponents() {
+        // Core components
+        $this->components['plugin_manager'] = new \HybridSearch\Core\PluginManager();
+        $this->components['security'] = new \HybridSearch\Core\Security();
+        $this->components['logger'] = new \HybridSearch\Core\Logger();
+        
+        // Database components
+        $this->components['database'] = new \HybridSearch\Database\DatabaseManager();
+        $this->components['analytics_repo'] = new \HybridSearch\Database\AnalyticsRepository($this->components['database']);
+        $this->components['ctr_repo'] = new \HybridSearch\Database\CTRRepository($this->components['database']);
+        
+        // API components
+        $api_url = get_option('hybrid_search_api_url', '');
+        $this->components['api_client'] = new \HybridSearch\API\APIClient([
+            'url' => $api_url,
+            'timeout' => 30,
+        ]);
+        $this->components['search_api'] = new \HybridSearch\API\SearchAPI($this->components['api_client']);
+        
+        // Services
+        $this->components['cache'] = new \HybridSearch\Services\CacheService();
+        $this->components['analytics_service'] = new \HybridSearch\Services\AnalyticsService(
+            $this->components['analytics_repo'],
+            $this->components['cache'],
+            $this->components['logger']
+        );
+        $this->components['ctr_service'] = new \HybridSearch\Services\CTRService(
+            $this->components['ctr_repo'],
+            $this->components['cache'],
+            $this->components['logger']
+        );
+        $this->components['auto_index'] = new \HybridSearch\Services\AutoIndexService(
+            $this->components['search_api'],
+            $this->components['logger']
         );
         
+        // Admin components
+        $this->components['admin'] = new \HybridSearch\Admin\AdminManager(
+            $this->components['analytics_service'],
+            $this->components['ctr_service']
+        );
+        $this->components['dashboard_widget'] = new \HybridSearch\Admin\DashboardWidget();
+        
+        // AJAX components
+        $this->components['ajax'] = new \HybridSearch\AJAX\AJAXManager(
+            $this->components['search_api'],
+            $this->components['analytics_service'],
+            $this->components['ctr_service'],
+            $this->components['security']
+        );
+        
+        // Frontend components
+        $this->components['frontend'] = new \HybridSearch\Frontend\FrontendManager($this->components['search_api']);
+        $this->components['shortcodes'] = new \HybridSearch\Frontend\ShortcodeManager($this->components['frontend']);
+    }
+    
+    /**
+     * Register WordPress hooks
+     * 
+     * @since 2.0.0
+     */
+    private function registerHooks() {
+        add_action('init', [$this, 'initHooks']);
+        add_action('wp_enqueue_scripts', [$this, 'enqueueScripts']);
+        add_action('admin_enqueue_scripts', [$this, 'enqueueAdminScripts']);
+        
+        // Component-specific hooks
+        $this->components['admin']->registerHooks();
+        $this->components['ajax']->registerHooks();
+        $this->components['frontend']->registerHooks();
+        $this->components['shortcodes']->registerHooks();
+        $this->components['auto_index']->registerHooks();
+        
+        // Register WP-Cron handler for single post indexing
+        add_action('hybrid_search_index_single_post', [$this->components['auto_index'], 'indexSinglePost']);
+    }
+    
+    /**
+     * Initialize WordPress hooks
+     * 
+     * @since 2.0.0
+     */
+    public function initHooks() {
         // Add query vars
-        add_filter('query_vars', array($this, 'add_query_vars'));
+        add_filter('query_vars', [$this, 'addQueryVars']);
     }
     
     /**
      * Add query variables
+     * 
+     * @param array $vars
+     * @return array
      */
-    public function add_query_vars($vars) {
+    public function addQueryVars($vars) {
         $vars[] = 'hybrid_search';
         return $vars;
     }
     
     /**
-     * Add admin menu
+     * Enqueue frontend scripts and styles
+     * 
+     * @since 2.0.0
      */
-    public function add_admin_menu() {
-        add_options_page(
-            'SCS Engineers Hybrid Search Settings',
-            'SCS Hybrid Search',
-            'manage_options',
-            'hybrid-search',
-            array($this, 'admin_page')
-        );
+    public function enqueueScripts() {
+        $this->components['frontend']->enqueueAssets();
     }
     
     /**
-     * Register settings
+     * Enqueue admin scripts and styles
+     * 
+     * @since 2.0.0
      */
-    public function register_settings() {
-        register_setting('hybrid_search_settings', 'hybrid_search_api_url');
-        register_setting('hybrid_search_settings', 'hybrid_search_api_key');
-        register_setting('hybrid_search_settings', 'hybrid_search_enabled');
-        register_setting('hybrid_search_settings', 'hybrid_search_max_results');
-        register_setting('hybrid_search_settings', 'hybrid_search_include_answer');
-        register_setting('hybrid_search_settings', 'hybrid_search_ai_instructions');
+    public function enqueueAdminScripts($hook) {
+        $this->components['admin']->enqueueAssets($hook);
     }
     
     /**
-     * Admin page
+     * Get component instance
+     * 
+     * @param string $component
+     * @return mixed|null
      */
-    public function admin_page() {
-        ?>
-        <div class="wrap">
-            <h1>SCS Engineers Hybrid Search Settings</h1>
-            <form method="post" action="options.php">
-                <?php
-                settings_fields('hybrid_search_settings');
-                do_settings_sections('hybrid_search_settings');
-                ?>
-                <table class="form-table">
-                    <tr>
-                        <th scope="row">Enable Hybrid Search</th>
-                        <td>
-                            <input type="checkbox" name="hybrid_search_enabled" value="1" <?php checked(1, get_option('hybrid_search_enabled'), true); ?> />
-                            <p class="description">Replace WordPress native search with hybrid search</p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row">API URL</th>
-                        <td>
-                            <input type="url" name="hybrid_search_api_url" value="<?php echo esc_attr(get_option('hybrid_search_api_url')); ?>" class="regular-text" />
-                            <p class="description">URL of your hybrid search API (e.g., https://your-api.railway.app)</p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row">API Key</th>
-                        <td>
-                            <input type="password" name="hybrid_search_api_key" value="<?php echo esc_attr(get_option('hybrid_search_api_key')); ?>" class="regular-text" />
-                            <p class="description">API key for authentication (if required)</p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row">Max Results</th>
-                        <td>
-                            <input type="number" name="hybrid_search_max_results" value="<?php echo esc_attr(get_option('hybrid_search_max_results', 10)); ?>" min="1" max="50" />
-                            <p class="description">Maximum number of search results to display</p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row">Include AI Answer</th>
-                        <td>
-                            <input type="checkbox" name="hybrid_search_include_answer" value="1" <?php checked(1, get_option('hybrid_search_include_answer'), true); ?> />
-                            <p class="description">Include AI-generated answer with search results</p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row">AI Instructions</th>
-                        <td>
-                            <textarea name="hybrid_search_ai_instructions" rows="4" cols="50" class="large-text"><?php echo esc_textarea(get_option('hybrid_search_ai_instructions')); ?></textarea>
-                            <p class="description">Custom instructions for AI answer generation (e.g., "Focus on technical details", "Use simple language")</p>
-                        </td>
-                    </tr>
-                </table>
-                <?php submit_button(); ?>
-            </form>
-            
-            <div class="card">
-                <h2>API Status</h2>
-                <button type="button" id="test-api" class="button">Test API Connection</button>
-                <div id="api-status"></div>
-            </div>
-        </div>
-        
-        <script>
-        document.getElementById('test-api').addEventListener('click', function() {
-            const statusDiv = document.getElementById('api-status');
-            statusDiv.innerHTML = 'Testing...';
-            
-            fetch('<?php echo admin_url('admin-ajax.php'); ?>', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                },
-                body: 'action=test_hybrid_search_api'
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    statusDiv.innerHTML = '<p style="color: green;">✓ API connection successful</p>';
-                } else {
-                    statusDiv.innerHTML = '<p style="color: red;">✗ API connection failed: ' + data.message + '</p>';
-                }
-            })
-            .catch(error => {
-                statusDiv.innerHTML = '<p style="color: red;">✗ Error: ' + error.message + '</p>';
-            });
-        });
-        </script>
-        <?php
+    public function getComponent($component) {
+        return isset($this->components[$component]) ? $this->components[$component] : null;
     }
     
     /**
-     * Enqueue scripts and styles
+     * Plugin activation
+     * 
+     * @since 2.0.0
      */
-    public function enqueue_scripts() {
-        if (is_search() || get_query_var('hybrid_search')) {
-            wp_enqueue_script(
-                'hybrid-search',
-                HYBRID_SEARCH_PLUGIN_URL . 'assets/hybrid-search.js',
-                array('jquery'),
-                HYBRID_SEARCH_VERSION,
-                true
-            );
-            
-            wp_enqueue_style(
-                'hybrid-search',
-                HYBRID_SEARCH_PLUGIN_URL . 'assets/hybrid-search.css',
-                array(),
-                HYBRID_SEARCH_VERSION
-            );
-            
-            // Localize script
-            wp_localize_script('hybrid-search', 'hybridSearch', array(
-                'ajaxUrl' => admin_url('admin-ajax.php'),
-                'apiUrl' => get_option('hybrid_search_api_url'),
-                'apiKey' => get_option('hybrid_search_api_key'),
-                'maxResults' => get_option('hybrid_search_max_results', 10),
-                'includeAnswer' => get_option('hybrid_search_include_answer', false),
-                'aiInstructions' => get_option('hybrid_search_ai_instructions', ''),
-                'nonce' => wp_create_nonce('hybrid_search_nonce')
-            ));
-        }
+    public function activate() {
+        $this->components['database']->createTables();
+        flush_rewrite_rules();
+        
+        // Log activation
+        $this->components['logger']->info('Plugin activated', [
+            'version' => HYBRID_SEARCH_VERSION,
+            'wp_version' => get_bloginfo('version'),
+            'php_version' => PHP_VERSION
+        ]);
     }
     
     /**
-     * Handle AJAX search
+     * Plugin deactivation
+     * 
+     * @since 2.0.0
      */
-    public function handle_ajax_search() {
-        // Verify nonce for security
-        if (!wp_verify_nonce($_POST['nonce'], 'hybrid_search_nonce')) {
-            wp_send_json_error('Invalid nonce');
-            return;
-        }
+    public function deactivate() {
+        flush_rewrite_rules();
         
-        $query = sanitize_text_field($_POST['query']);
-        $limit = intval($_POST['limit']) ?: 10;
-        $include_answer = isset($_POST['include_answer']) ? (bool)$_POST['include_answer'] : false;
-        $ai_instructions = sanitize_textarea_field($_POST['ai_instructions'] ?? '');
-        
-        $results = $this->perform_search($query, $limit, $include_answer, $ai_instructions);
-        
-        wp_send_json_success($results);
+        // Log deactivation
+        $this->components['logger']->info('Plugin deactivated');
     }
     
     /**
-     * Handle API test
+     * Prevent cloning
      */
-    public function handle_test_api() {
-        $result = $this->test_api_connection();
-        wp_send_json($result);
-    }
+    private function __clone() {}
     
     /**
-     * Test API connection
+     * Prevent unserialization
      */
-    public function test_api_connection() {
-        $api_url = get_option('hybrid_search_api_url');
-        
-        if (empty($api_url)) {
-            return array('success' => false, 'message' => 'API URL not configured');
-        }
-        
-        $response = wp_remote_get($api_url . '/health', array(
-            'timeout' => 10,
-            'headers' => array(
-                'User-Agent' => 'WordPress Hybrid Search Plugin'
-            ),
-            'sslverify' => true
-        ));
-        
-        if (is_wp_error($response)) {
-            return array('success' => false, 'message' => $response->get_error_message());
-        }
-        
-        $body = wp_remote_retrieve_body($response);
-        $data = json_decode($body, true);
-        
-        if ($data && $data['status'] === 'healthy') {
-            return array('success' => true, 'message' => 'API is healthy');
-        } else {
-            return array('success' => false, 'message' => 'API returned unhealthy status');
-        }
-    }
-    
-    /**
-     * Perform search via API
-     */
-    private function perform_search($query, $limit = 10, $include_answer = false, $ai_instructions = '') {
-        $api_url = get_option('hybrid_search_api_url');
-        $api_key = get_option('hybrid_search_api_key');
-        
-        if (empty($api_url)) {
-            return array('error' => 'API URL not configured');
-        }
-        
-        $request_data = array(
-            'query' => $query,
-            'limit' => $limit,
-            'include_answer' => $include_answer,
-            'ai_instructions' => $ai_instructions
-        );
-        
-        $headers = array(
-            'Content-Type' => 'application/json',
-            'User-Agent' => 'WordPress Hybrid Search Plugin'
-        );
-        
-        if (!empty($api_key)) {
-            $headers['Authorization'] = 'Bearer ' . $api_key;
-        }
-        
-        $response = wp_remote_post($api_url . '/search', array(
-            'headers' => $headers,
-            'body' => json_encode($request_data),
-            'timeout' => 30,
-            'sslverify' => true
-        ));
-        
-        if (is_wp_error($response)) {
-            return array('error' => $response->get_error_message());
-        }
-        
-        $body = wp_remote_retrieve_body($response);
-        $data = json_decode($body, true);
-        
-        if (!$data) {
-            return array('error' => 'Invalid response from API');
-        }
-        
-        return $data;
-    }
-    
-    /**
-     * Replace search query
-     */
-    public function replace_search_query($search, $wp_query) {
-        if (!$this->enabled || !$wp_query->is_search()) {
-            return $search;
-        }
-        
-        // Store original search query for later use
-        $wp_query->set('hybrid_search_query', $wp_query->get('s'));
-        
-        // Return empty search to prevent WordPress from searching
-        return '';
-    }
-    
-    /**
-     * Load custom search template
-     */
-    public function load_search_template($template) {
-        if (!$this->enabled) {
-            return $template;
-        }
-        
-        $custom_template = locate_template('hybrid-search-results.php');
-        if ($custom_template) {
-            return $custom_template;
-        }
-        
-        // Load default template from plugin
-        return HYBRID_SEARCH_PLUGIN_PATH . 'templates/search-results.php';
-    }
+    public function __wakeup() {}
 }
 
 // Initialize the plugin
-new HybridSearchPlugin();
+function hybrid_search_init() {
+    return HybridSearchPlugin::getInstance();
+}
 
-// Activation hook
-register_activation_hook(__FILE__, function() {
-    // Add rewrite rules
-    add_rewrite_rule(
-        '^search/([^/]+)/?$',
-        'index.php?hybrid_search=1&s=$matches[1]',
-        'top'
-    );
-    
-    flush_rewrite_rules();
-});
-
-// Deactivation hook
-register_deactivation_hook(__FILE__, function() {
-    flush_rewrite_rules();
-});
+// Start the plugin
+add_action('plugins_loaded', 'hybrid_search_init');

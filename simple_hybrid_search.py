@@ -30,11 +30,35 @@ except ImportError as e:
     CerebrasLLM = None
     CEREBRAS_AVAILABLE = False
 
+# Try to import Sentence Transformers for real embeddings
+try:
+    from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+    logger.info("Sentence Transformers available for semantic embeddings")
+except ImportError as e:
+    logging.warning(f"Sentence Transformers not available, will use fallback: {e}")
+    SentenceTransformer = None
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
+
 
 class SimpleHybridSearch:
     """Simplified hybrid search implementation."""
     
     def __init__(self):
+        # Initialize Sentence Transformers for real semantic embeddings
+        if SENTENCE_TRANSFORMERS_AVAILABLE and SentenceTransformer is not None:
+            try:
+                logger.info("Initializing Sentence Transformer embedding model...")
+                # Use lightweight, fast model (80MB, 500+ sentences/sec)
+                self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+                logger.info("Sentence Transformer model loaded successfully (all-MiniLM-L6-v2)")
+            except Exception as e:
+                logger.error(f"Failed to initialize embedding model: {e}")
+                self.embedding_model = None
+        else:
+            logger.warning("Sentence Transformers not available - using hash-based fallback")
+            self.embedding_model = None
+        
         # Initialize Qdrant if available
         if QDRANT_AVAILABLE and QdrantManager is not None:
             try:
@@ -141,7 +165,7 @@ class SimpleHybridSearch:
             logger.error(f"Error initializing sample data: {e}")
     
     async def index_documents(self, documents: List[Dict[str, Any]]) -> bool:
-        """Index documents for search."""
+        """Index documents for search with automatic chunking for long content."""
         try:
             logger.info(f"Indexing {len(documents)} documents...")
             
@@ -149,11 +173,18 @@ class SimpleHybridSearch:
                 logger.warning("No documents to index")
                 return False
             
+            # Chunk long documents
+            from content_chunker import ContentChunker
+            chunker = ContentChunker(chunk_size=1000, overlap=200)
+            chunked_documents = chunker.chunk_documents(documents)
+            
+            logger.info(f"After chunking: {len(chunked_documents)} total documents/chunks")
+            
             # Prepare documents for indexing
             processed_docs = []
             document_texts = []
             
-            for doc in documents:
+            for doc in chunked_documents:
                 try:
                     # Create combined text for embedding
                     combined_text = f"{doc['title']} {doc['content']}"
@@ -216,10 +247,11 @@ class SimpleHybridSearch:
         limit: int = 10,
         enable_ai_reranking: bool = True,
         ai_weight: float = 0.7,
-        ai_reranking_instructions: str = ""
+        ai_reranking_instructions: str = "",
+        enable_query_expansion: bool = True
     ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
-        Perform search with optional AI reranking.
+        Perform search with optional AI reranking and query expansion.
         
         Args:
             query: Search query
@@ -227,22 +259,49 @@ class SimpleHybridSearch:
             enable_ai_reranking: Whether to use AI reranking
             ai_weight: Weight for AI score (0-1), higher = more AI influence
             ai_reranking_instructions: Custom instructions for AI reranking
+            enable_query_expansion: Whether to expand query with synonyms
             
         Returns:
             (results, metadata) tuple
         """
         try:
+            # Step 0: Query expansion (if enabled)
+            search_queries = [query]
+            if enable_query_expansion:
+                try:
+                    from query_expander import QueryExpander
+                    expander = QueryExpander(llm_client=self.llm_client)
+                    search_queries = expander.expand_query(query, max_expansions=3)
+                    logger.info(f"Query expanded to: {search_queries}")
+                except Exception as e:
+                    logger.warning(f"Query expansion failed: {e}, using original query only")
+            
             # Step 1: Get initial candidates using TF-IDF (get more if using AI reranking)
             initial_limit = min(limit * 3, 50) if enable_ai_reranking else limit
             
-            # If we have TF-IDF fitted, use it for search
-            if self.tfidf_matrix is not None and len(self.documents) > 0:
-                logger.info(f"Using TF-IDF search (getting {initial_limit} candidates)")
-                candidates = self._tfidf_search(query, initial_limit)
-            else:
-                # Fallback to simple text search
-                logger.info(f"Using simple text search (getting {initial_limit} candidates)")
-                candidates = self._simple_text_search(query, initial_limit)
+            # Search with all expanded queries and combine results
+            all_candidates = []
+            seen_ids = set()
+            
+            for search_query in search_queries:
+                # If we have TF-IDF fitted, use it for search
+                if self.tfidf_matrix is not None and len(self.documents) > 0:
+                    logger.info(f"Using TF-IDF search for '{search_query}' (getting {initial_limit} candidates)")
+                    query_candidates = self._tfidf_search(search_query, initial_limit)
+                else:
+                    # Fallback to simple text search
+                    logger.info(f"Using simple text search for '{search_query}' (getting {initial_limit} candidates)")
+                    query_candidates = self._simple_text_search(search_query, initial_limit)
+                
+                # Add unique candidates
+                for candidate in query_candidates:
+                    if candidate['id'] not in seen_ids:
+                        all_candidates.append(candidate)
+                        seen_ids.add(candidate['id'])
+            
+            # Sort combined candidates by score
+            all_candidates.sort(key=lambda x: x.get('score', 0), reverse=True)
+            candidates = all_candidates[:initial_limit]
             
             if not candidates:
                 return [], {'ai_reranking_used': False, 'message': 'No results found'}
@@ -330,12 +389,44 @@ class SimpleHybridSearch:
             }
     
     async def _get_embedding(self, text: str) -> List[float]:
-        """Get embedding for text using simple hash-based embedding."""
+        """Get semantic embedding for text using Sentence Transformers or fallback."""
         try:
-            # Create a simple hash-based embedding for demo purposes
-            # This is not as good as real embeddings but works for testing
+            # Use real semantic embeddings if available
+            if self.embedding_model is not None:
+                logger.debug(f"Generating semantic embedding for text (length: {len(text)} chars)")
+                
+                # Generate real semantic embedding
+                embedding = self.embedding_model.encode(
+                    text,
+                    convert_to_numpy=True,
+                    normalize_embeddings=True,
+                    show_progress_bar=False
+                )
+                
+                # Ensure it's exactly 384 dimensions (model outputs 384)
+                if len(embedding) < 384:
+                    # Pad if needed
+                    embedding = np.pad(embedding, (0, 384 - len(embedding)), mode='constant')
+                elif len(embedding) > 384:
+                    # Truncate if needed
+                    embedding = embedding[:384]
+                
+                return embedding.tolist()
+            
+            else:
+                # Fallback to hash-based embedding if Sentence Transformers not available
+                logger.warning("Using hash-based embedding fallback (install sentence-transformers for better quality)")
+                return self._hash_based_embedding(text)
+                
+        except Exception as e:
+            logger.error(f"Error getting embedding: {e}")
+            # Return zero vector as last resort
+            return [0.0] * 384
+    
+    def _hash_based_embedding(self, text: str) -> List[float]:
+        """Fallback hash-based embedding (not semantic, only for demo)."""
+        try:
             import hashlib
-            import struct
             
             # Create a hash of the text
             text_hash = hashlib.md5(text.encode()).hexdigest()
@@ -356,7 +447,7 @@ class SimpleHybridSearch:
             return embedding
                 
         except Exception as e:
-            logger.error(f"Error getting embedding: {e}")
+            logger.error(f"Error in hash-based embedding: {e}")
             # Return zero vector as fallback
             return [0.0] * 384
     
