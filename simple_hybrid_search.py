@@ -389,9 +389,30 @@ class SimpleHybridSearch:
             }
     
     async def _get_embedding(self, text: str) -> List[float]:
-        """Get semantic embedding for text using Sentence Transformers or fallback."""
+        """Get semantic embedding for text using OpenAI API or fallback."""
         try:
-            # Use real semantic embeddings if available
+            # Try OpenAI embeddings first (if API key available)
+            if hasattr(settings, 'openai_api_key') and settings.openai_api_key and settings.openai_api_key != "your_openai_api_key_here":
+                try:
+                    from openai import OpenAI
+                    client = OpenAI(api_key=settings.openai_api_key)
+                    response = client.embeddings.create(
+                        model="text-embedding-3-small",
+                        input=text[:8000]  # Limit input length
+                    )
+                    embedding = response.data[0].embedding
+                    
+                    # Pad or truncate to 384 dimensions
+                    if len(embedding) < 384:
+                        embedding = embedding + [0.0] * (384 - len(embedding))
+                    else:
+                        embedding = embedding[:384]
+                    
+                    return embedding
+                except Exception as e:
+                    logger.warning(f"OpenAI embedding failed: {e}, using fallback")
+            
+            # Use Sentence Transformers if available
             if self.embedding_model is not None:
                 logger.debug(f"Generating semantic embedding for text (length: {len(text)} chars)")
                 
