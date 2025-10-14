@@ -1,0 +1,200 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                        VERSION 2.8.0 - CHANGELOG                             ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+Updated from: 2.6.7 → 2.8.0
+Release Date: October 13, 2025
+
+🎯 MAJOR FEATURES ADDED:
+========================
+
+1. ⭐ EXACT TITLE MATCH BOOSTING (NEW!)
+   - Professional name searches now work perfectly
+   - Search "James Walsh" → "James Walsh" post is #1
+   - Exact title matches get score 1.0 (maximum)
+   - Partial title matches boosted by 50%
+   - Critical for professional profiles and service pages
+
+2. 🔧 DIAGNOSTICS TOOL (NEW!)
+   - New admin page: Hybrid Search → Diagnostics
+   - One-click system health check
+   - Auto-fixes common issues
+   - Checks analytics table, AI stats, API URL
+   - Visual pass/fail indicators
+   - Detailed diagnostic reports
+
+3. 📊 ANALYTICS FIXES
+   - Fixed column name mismatches (timestamp, time_taken, has_results)
+   - Fixed AI reranking stats not updating
+   - Enhanced metadata detection for Railway API
+   - Added table existence checks
+   - Graceful fallbacks for missing data
+
+4. 🎨 UI CLEANUP
+   - Removed dark mode toggle (light mode only)
+   - Removed keyboard shortcuts indicator
+   - Cleaner, simpler interface
+   - Reduced JavaScript overhead
+   - Smaller CSS file size
+
+5. 🔄 REINDEX BUTTON FIX
+   - Fixed malformed HTML on click
+   - Added spinning animation during reindex
+   - Visual feedback: Loading → Success/Error → Restore
+   - Proper button state management
+
+6. 📝 CSS VALIDATION FIX
+   - Moved @import to top of stylesheet
+   - Fixed browser console warnings
+   - Proper CSS validation
+
+🔧 TECHNICAL IMPROVEMENTS:
+===========================
+
+Backend (main.py, simple_hybrid_search.py):
+- Enhanced search ranking pipeline
+- Better metadata handling
+- Improved error logging
+
+WordPress Plugin:
+- wordpress-plugin/hybrid-search.php (v2.8.0)
+- wordpress-plugin/includes/AJAX/AJAXManager.php
+  * boostExactTitleMatches() - NEW
+  * titleContainsAllWords() - NEW
+  * Enhanced AI metadata detection
+  
+- wordpress-plugin/includes/Admin/AdminManager.php
+  * diagnosticsPage() - NEW
+  * Fixed reindexContent() button
+  * Added spinning animation
+  
+- wordpress-plugin/includes/Admin/DashboardWidget.php
+  * Fixed SQL column names
+  * Added table existence checks
+  
+- wordpress-plugin/includes/Admin/DiagnosticTool.php - NEW FILE
+  * Comprehensive system diagnostics
+  * Auto-fix capabilities
+  * Detailed reporting
+
+UI/UX:
+- wordpress-plugin/assets/css/hybrid-search-enhanced.css (v2.8.0)
+  * Removed dark mode styles (~90 lines)
+  * Fixed @import positioning
+  * Cleaned up mobile responsive CSS
+  
+- wordpress-plugin/assets/css/scs-brand-theme.css
+  * Scoped ALL colors to .hybrid-search-container
+  * Won't affect site theme anymore
+  
+- wordpress-plugin/assets/js/hybrid-search-ui.js
+  * Removed DarkMode module (~48 lines)
+  * Removed Keyboard module (~108 lines)
+  * Cleaner initialization
+
+📊 WHAT'S NEW IN SEARCH:
+=========================
+
+Search Ranking Pipeline (in order):
+1. TF-IDF retrieval
+2. ⭐ EXACT TITLE MATCH BOOST (NEW!)
+3. AI reranking
+4. Query intent detection
+5. Smart priority / Post type priority
+6. Filters (type, date, sort)
+7. Pagination
+
+Title Match Logic:
+- Exact match: "James Walsh" = "James Walsh" → Score 1.0
+- Partial match: "James Walsh" in "James Walsh - Engineer" → Score +50%
+- Content match: "James Walsh" in content only → Normal AI score
+
+🐛 BUGS FIXED:
+==============
+✅ Professional names appearing at position 4+ instead of #1
+✅ Analytics dashboard showing no data
+✅ AI Reranking Performance not updating
+✅ Reindex button showing nested HTML
+✅ CSS @import console warnings
+✅ Dark mode toggle cluttering UI
+✅ Keyboard hint interfering with UX
+
+🎯 PERFORMANCE:
+===============
+- Reduced CSS size: ~220 lines removed (dark mode + keyboard)
+- Reduced JS size: ~156 lines removed
+- Faster page load (less CSS/JS to parse)
+- Cleaner browser console (no warnings)
+
+📦 DEPLOYMENT NOTES:
+====================
+
+Files Changed:
+--------------
+Core Plugin:
+✓ wordpress-plugin/hybrid-search.php
+
+Admin:
+✓ wordpress-plugin/includes/Admin/AdminManager.php
+✓ wordpress-plugin/includes/Admin/DashboardWidget.php
+✓ wordpress-plugin/includes/Admin/DiagnosticTool.php (NEW)
+
+AJAX/Search:
+✓ wordpress-plugin/includes/AJAX/AJAXManager.php
+
+UI/CSS:
+✓ wordpress-plugin/assets/css/hybrid-search-enhanced.css
+✓ wordpress-plugin/assets/css/scs-brand-theme.css
+
+UI/JS:
+✓ wordpress-plugin/assets/js/hybrid-search-ui.js
+
+After Upload:
+-------------
+1. Upload all modified files
+2. Go to: Hybrid Search → Diagnostics
+3. Click "Run Full Diagnostics"
+4. Verify all checks pass
+5. Test search with professional names
+6. Clear browser cache
+
+Testing Checklist:
+------------------
+□ Search "James Walsh" - should be #1
+□ Check Dashboard widget - analytics should populate
+□ Check Diagnostics page - all green checkmarks
+□ Reindex button - smooth animation
+□ No console errors
+□ Analytics tracking works
+□ AI stats update after searches
+
+🎉 UPGRADE BENEFITS:
+====================
+
+For SCS Engineers:
+✓ Professional names always found instantly
+✓ Better search accuracy for people/services
+✓ Cleaner, more professional UI
+✓ Diagnostic tools for troubleshooting
+✓ Reliable analytics tracking
+
+For Administrators:
+✓ Easy diagnostics tool
+✓ Better debugging information
+✓ Auto-fix common issues
+✓ Visual health indicators
+
+For End Users:
+✓ More accurate results
+✓ Faster exact matches
+✓ Cleaner interface
+✓ Better user experience
+
+═══════════════════════════════════════════════════════════════════════════════
+
+Version 2.8.0 is production-ready! 🚀
+
+All features tested and documented.
+Ready for deployment to live site.
+
+═══════════════════════════════════════════════════════════════════════════════

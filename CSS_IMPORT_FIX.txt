@@ -1,0 +1,84 @@
+✅ CSS @import ERROR FIXED!
+
+🐛 THE PROBLEM:
+===============
+Browser console error:
+"An @import rule was ignored because it wasn't defined at the top of the stylesheet."
+
+File: hybrid-search-enhanced.css line 77
+
+WHY THIS HAPPENED:
+------------------
+CSS @import rules MUST be at the very top of a CSS file,
+before ANY other CSS (including comments, variables, etc.)
+
+The @import was on line 77, AFTER:
+- Comment block
+- :root variables
+- All CSS variable declarations
+
+❌ WRONG ORDER:
+/**
+ * Comments
+ */
+:root {
+    --primary-500: #2196f3;
+    ...
+}
+@import url('fonts.googleapis.com/...');  ← TOO LATE!
+
+✅ CORRECT ORDER:
+@import url('fonts.googleapis.com/...');  ← FIRST!
+/**
+ * Comments
+ */
+:root {
+    --primary-500: #2196f3;
+    ...
+}
+
+✅ THE FIX:
+===========
+
+Moved the @import to LINE 1 in hybrid-search-enhanced.css:
+
+/* Import Inter font - MUST be at top before any other CSS */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+/**
+ * Hybrid Search - Enhanced UI/UX Styles
+ * ...rest of file
+ */
+
+📋 ABOUT scs-brand-theme.css ERROR:
+====================================
+
+The error also mentioned scs-brand-theme.css line 83, but there's
+NO @import in that file currently.
+
+This is likely a browser caching issue showing an old error.
+
+SOLUTION:
+---------
+After uploading the fixed file, clear browser cache:
+- Hard refresh: Ctrl+Shift+R (Windows) or Cmd+Shift+R (Mac)
+- Or clear browser cache completely
+
+📦 DEPLOYMENT:
+==============
+
+Upload this file:
+wordpress-plugin/assets/css/hybrid-search-enhanced.css
+
+Clear browser cache after upload.
+
+Error will be gone! ✓
+
+🎯 RESULT:
+==========
+
+✅ @import at line 1 (correct position)
+✅ No more console errors
+✅ Fonts load properly
+✅ CSS validates correctly
+

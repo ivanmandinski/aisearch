@@ -1,0 +1,261 @@
+✅ PAGINATION & CONTACT BUTTON - BOTH FIXED!
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                  ISSUE #1: PAGINATION - FIXED                                ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+🐛 THE PROBLEM:
+===============
+"Loading more results" immediately shows "No more results to load"
+But you know there ARE more results available!
+
+ROOT CAUSE:
+-----------
+❌ WRONG pagination logic in AJAXManager.php (line 434):
+   'has_more' => count($result['results']) === $limit
+
+This checked if current page had EXACTLY the limit (e.g., 10 results).
+
+But the problem was:
+1. Backend returns 50 results from API
+2. WordPress applies filters (applySmartPriority, applyFilters)
+3. Filters reduce results to maybe 40 total
+4. Pagination slices first 10 results
+5. has_more = (10 === 10) = TRUE ✓ (correct for page 1)
+6. User scrolls, loads page 2 (offset 10, limit 10)
+7. Returns 10 more results
+8. has_more = (10 === 10) = TRUE ✓ (correct for page 2)
+9. User scrolls, loads page 3 (offset 20, limit 10)
+10. Returns 10 more results
+11. has_more = (10 === 10) = TRUE ✓ (correct for page 3)
+12. User scrolls, loads page 4 (offset 30, limit 10)
+13. Returns last 10 results (total was 40)
+14. has_more = (10 === 10) = TRUE ✓ BUT THIS IS WRONG!
+15. User scrolls, loads page 5 (offset 40, limit 10)
+16. Returns 0 results (offset 40 >= total 40)
+17. Shows "No more results to load"
+
+The check should be: "Are there results BEYOND this page?"
+
+✅ THE FIX:
+===========
+New logic in AJAXManager.php (line 380):
+
+```php
+// Calculate if there are more results BEFORE slicing
+$has_more_results = ($offset + $limit) < $total_after_filters;
+```
+
+Example with 35 total results:
+- Page 1: offset=0, limit=10 → has_more = (0+10) < 35 = TRUE ✓
+- Page 2: offset=10, limit=10 → has_more = (10+10) < 35 = TRUE ✓
+- Page 3: offset=20, limit=10 → has_more = (20+10) < 35 = TRUE ✓
+- Page 4: offset=30, limit=10 → has_more = (30+10) < 35 = FALSE ✓ CORRECT!
+
+Added to pagination response:
+- 'total_results' => $total_after_filters
+- Better logging for debugging
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                ISSUE #2: CONTACT BUTTON - FIXED                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+🐛 THE PROBLEM:
+===============
+Contact button not showing for SCS Professional posts
+
+ROOT CAUSE:
+-----------
+The code was checking ONLY for exact match: type === 'scs-professional'
+
+But your actual post type might be:
+- 'scs_professional' (underscore, not dash)
+- 'professional'
+- 'scs-professionals' (plural)
+- 'team'
+- 'staff'
+- Or something else!
+
+✅ THE FIX:
+===========
+Now checks MULTIPLE variations (case-insensitive):
+
+PHP (FrontendManager.php line 526-534):
+```php
+$is_professional = in_array($post_type, [
+    'scs-professional', 
+    'scs_professional',
+    'professional',
+    'scs-professionals',
+    'scs_professionals',
+    'team',
+    'staff'
+]);
+```
+
+JavaScript (both files):
+```javascript
+const professionalTypes = [
+    'scs-professional', 
+    'scs_professional',
+    'professional',
+    'scs-professionals',
+    'scs_professionals',
+    'team',
+    'staff'
+];
+const isProfessional = professionalTypes.includes(result.type.toLowerCase());
+```
+
+Added DEBUGGING LOGS:
+---------------------
+PHP: error_log('Checking contact button - Type: "' . $post_type . '", Is Professional? ' . ($is_professional ? 'YES' : 'NO'));
+JavaScript: console.log('Contact button check - Type:', result.type, 'Is Professional?', isProfessional);
+
+══════════════════════════════════════════════════════════════════════════════
+
+🔍 HOW TO DEBUG CONTACT BUTTON:
+================================
+
+1. Search for an SCS Professional (e.g., "James Walsh")
+
+2. Open browser console (F12)
+
+3. Look for this log:
+   "Contact button check - Type: [actual_type], Is Professional? true/false"
+
+4. Check WordPress debug.log:
+   grep "Checking contact button" wp-content/debug.log
+
+5. If it says "Is Professional? false", you'll see the ACTUAL post type name
+
+6. Tell me the actual type name, and I'll add it to the list!
+
+EXAMPLE DEBUG OUTPUT:
+---------------------
+✓ Type: "scs_professional" → Shows button (matches list)
+✓ Type: "scs-professionals" → Shows button (matches list)
+✓ Type: "team" → Shows button (matches list)
+❌ Type: "our-team" → Doesn't show (not in list, needs to be added)
+
+══════════════════════════════════════════════════════════════════════════════
+
+📦 FILES TO UPLOAD:
+===================
+
+CRITICAL - All 3 files:
+-----------------------
+1. ✅ wordpress-plugin/includes/AJAX/AJAXManager.php
+   - Fixed pagination has_more calculation
+   - Added total_results to response
+
+2. ✅ wordpress-plugin/includes/Frontend/FrontendManager.php
+   - Fixed contact button type check (PHP rendering)
+   - Fixed contact button type check (inline JavaScript)
+   - Added debugging logs
+
+3. ✅ wordpress-plugin/assets/js/hybrid-search-integration.js
+   - Fixed contact button type check
+   - Added shouldShowContactButton() helper
+   - Added debugging logs
+
+══════════════════════════════════════════════════════════════════════════════
+
+🚀 AFTER UPLOAD:
+================
+
+1. Upload all 3 files
+
+2. Clear browser cache completely
+
+3. Test pagination:
+   - Search for something with many results
+   - Scroll to bottom
+   - Should load more results automatically
+   - Will show "No more results" only when TRULY no more
+
+4. Test contact button:
+   - Search for SCS Professional (e.g., "James Walsh")
+   - Open browser console (F12)
+   - Look for: "Contact button check - Type: [type], Is Professional? [true/false]"
+   - If false, check what the actual type name is
+
+5. Check logs:
+   Browser console:
+   - "Contact button check - Type: ..."
+   - "Hybrid Search: Has more? YES/NO (total=X, showing up to Y)"
+   
+   WordPress debug.log:
+   - "Checking contact button - Type: ..."
+   - "Has more? YES/NO"
+
+══════════════════════════════════════════════════════════════════════════════
+
+📊 SUPPORTED POST TYPES FOR CONTACT BUTTON:
+============================================
+
+Currently accepts (case-insensitive):
+--------------------------------------
+✓ scs-professional
+✓ scs_professional
+✓ professional
+✓ scs-professionals
+✓ scs_professionals
+✓ team
+✓ staff
+
+If your post type is different:
+--------------------------------
+1. Check the console log to see actual type
+2. Tell me the exact name
+3. I'll add it to the list
+
+Example:
+If log shows: "Type: our-team"
+Then I add 'our-team' to the array
+
+══════════════════════════════════════════════════════════════════════════════
+
+🎯 EXPECTED BEHAVIOR AFTER FIX:
+================================
+
+Pagination:
+-----------
+Search returns 35 total results (after filters):
+- Loads results 1-10 ✓
+- Scroll → Loads results 11-20 ✓
+- Scroll → Loads results 21-30 ✓
+- Scroll → Loads results 31-35 ✓
+- Scroll → Shows "No more results to load" ✓
+
+Contact Button:
+---------------
+For James Walsh post (type = "scs-professional"):
+- Shows: ✉ Contact James Walsh ✓
+- Has: data-staffid="[ID from post]" ✓
+- Styled with #6F94A9 brand color ✓
+
+For regular posts:
+- No contact button ✓
+
+══════════════════════════════════════════════════════════════════════════════
+
+💡 QUICK TEST:
+==============
+
+After uploading:
+
+1. Search: "environmental" (should have many results)
+   - Scroll to bottom
+   - Should auto-load more
+   - Repeat until all results shown
+
+2. Search: "James Walsh" (SCS Professional)
+   - Open console (F12)
+   - Look for: "Contact button check - Type: [X]"
+   - Should show contact button below result
+
+3. If contact button still not showing:
+   - Tell me the "Type: [X]" from the console
+   - I'll add that exact type to the supported list
+
