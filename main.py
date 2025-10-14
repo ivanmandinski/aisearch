@@ -61,7 +61,8 @@ wp_client = None
 # Pydantic models
 class SearchRequest(BaseModel):
     query: str = Field(..., description="Search query")
-    limit: int = Field(default=10, ge=1, le=50, description="Maximum number of results")
+    limit: int = Field(default=10, ge=1, le=100, description="Maximum number of results per page")
+    offset: int = Field(default=0, ge=0, description="Offset for pagination")
     include_answer: bool = Field(default=False, description="Whether to include LLM-generated answer")
     filters: Optional[Dict[str, Any]] = Field(default=None, description="Search filters")
     ai_instructions: Optional[str] = Field(default=None, description="Custom AI instructions for answer generation")
@@ -278,36 +279,47 @@ async def search(request: SearchRequest):
         search_metadata = {}
         zero_result_data = None
         
+        # Log pagination parameters
+        logger.info(f"Search request: query='{search_query}', limit={request.limit}, offset={request.offset}")
+        
         if request.include_answer:
             try:
                 result = await search_system.search_with_answer(
                     search_query, 
-                    limit=request.limit, 
+                    limit=request.limit + request.offset,  # Get enough results for offset
                     custom_instructions=request.ai_instructions
                 )
-                results = result.get('sources', [])
+                # Apply offset after getting results
+                all_results = result.get('sources', [])
+                results = all_results[request.offset:request.offset + request.limit]
                 answer = result.get('answer')
+                total_results = len(all_results)
             except Exception as e:
                 logger.error(f"Search with answer failed: {e}")
                 # Fallback to basic search
-                results, search_metadata = await search_system.search(
+                all_results, search_metadata = await search_system.search(
                     query=search_query,
-                    limit=request.limit,
+                    limit=request.limit + request.offset,  # Get enough for offset
                     enable_ai_reranking=request.enable_ai_reranking,
                     ai_weight=request.ai_weight,
                     ai_reranking_instructions=request.ai_reranking_instructions
                 )
+                results = all_results[request.offset:request.offset + request.limit]
                 answer = None
+                total_results = len(all_results)
         else:
             # Regular search with AI reranking
-            results, search_metadata = await search_system.search(
+            all_results, search_metadata = await search_system.search(
                 query=search_query,
-                limit=request.limit,
+                limit=request.limit + request.offset,  # Get enough results for offset
                 enable_ai_reranking=request.enable_ai_reranking,
                 ai_weight=request.ai_weight,
                 ai_reranking_instructions=request.ai_reranking_instructions
             )
+            # Apply offset to slice results
+            results = all_results[request.offset:request.offset + request.limit]
             answer = None
+            total_results = len(all_results)
         
         # Apply filters if provided
         if request.filters:
@@ -333,13 +345,26 @@ async def search(request: SearchRequest):
         
         processing_time = (datetime.utcnow() - start_time).total_seconds()
         
+        # Calculate pagination metadata
+        has_more = (request.offset + request.limit) < total_results
+        
+        logger.info(f"Pagination: offset={request.offset}, limit={request.limit}, total={total_results}, has_more={has_more}")
+        
         # Return JSON response directly (avoid Pydantic serialization issues)
         response_content = {
             "success": True,
             "results": results,
+            "pagination": {
+                "offset": request.offset,
+                "limit": request.limit,
+                "has_more": has_more,
+                "next_offset": request.offset + request.limit,
+                "total_results": total_results
+            },
             "metadata": {
                 "query": request.query,
-                "total_results": len(results),
+                "total_results": total_results,
+                "returned_results": len(results),
                 "response_time": processing_time * 1000,  # Convert to milliseconds
                 "has_answer": answer is not None,
                 "answer": answer or "",

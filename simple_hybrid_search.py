@@ -277,7 +277,7 @@ class SimpleHybridSearch:
                     logger.warning(f"Query expansion failed: {e}, using original query only")
             
             # Step 1: Get initial candidates using TF-IDF (get more if using AI reranking)
-            initial_limit = min(limit * 3, 50) if enable_ai_reranking else limit
+            initial_limit = min(limit * 3, 200) if enable_ai_reranking else limit
             
             # Search with all expanded queries and combine results
             all_candidates = []

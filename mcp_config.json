@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "hybrid-search": {
+      "command": "python",
+      "args": [
+        "/Users/ivanm/Desktop/aisearch-main/mcp_server.py"
+      ],
+      "env": {
+        "QDRANT_URL": "http://localhost:6333",
+        "CEREBRAS_API_KEY": "your-api-key-here",
+        "WORDPRESS_URL": "https://www.scsengineers.com",
+        "WORDPRESS_API_URL": "https://www.scsengineers.com/wp-json/wp/v2",
+        "OPENAI_API_KEY": "your-openai-key-here"
+      },
+      "description": "Hybrid search server for WordPress content with AI reranking"
+    }
+  }
+}
+

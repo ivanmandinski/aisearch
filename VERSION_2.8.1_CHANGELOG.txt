@@ -1,0 +1,231 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                        VERSION 2.8.1 - CHANGELOG                             ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+Updated from: 2.8.0 → 2.8.1
+Release Date: October 14, 2025
+Type: Bugfix Release
+
+🐛 BUGS FIXED IN 2.8.1:
+========================
+
+1. ✅ PAGINATION BROKEN - "No more results to load" after 10 results
+   -----------------------------------------------------------------
+   ROOT CAUSE: WordPress was only requesting 10 results from API
+   FIX: Now requests 50 results, paginates client-side
+   BENEFIT: Smooth infinite scroll through all available results
+   
+   Files: AJAXManager.php (line 310, 316-317, 324-326, 384)
+
+2. ✅ RESULT CARDS STILL SHOWING SCORE/TYPE BADGES
+   ------------------------------------------------
+   ROOT CAUSE: JavaScript files had old rendering code
+   FIX: Updated ALL JavaScript rendering locations (3 places)
+   BENEFIT: Clean professional cards with Priority 1 metadata
+   
+   Files: 
+   - hybrid-search-integration.js (createResultCard function)
+   - FrontendManager.php (inline JavaScript, 2 locations)
+
+3. ✅ CONTACT BUTTON NOT SHOWING FOR SCS PROFESSIONALS
+   ---------------------------------------------------
+   ROOT CAUSE: Only checked exact match 'scs-professional'
+   FIX: Now checks 7 variations (scs-professional, team, staff, etc.)
+   BENEFIT: Contact buttons work regardless of exact post type name
+   
+   Files:
+   - FrontendManager.php (PHP + inline JS)
+   - hybrid-search-integration.js (shouldShowContactButton helper)
+
+4. ✅ CONTACT BUTTON CSS AFFECTING ENTIRE SITE
+   -------------------------------------------
+   ROOT CAUSE: CSS selector too broad (.contact-popup.btninfo)
+   FIX: Scoped to .hybrid-search-container .contact-popup.btninfo
+   BENEFIT: Won't interfere with site's existing contact buttons
+   
+   Files: hybrid-search-enhanced.css
+
+5. ✅ SEARCH INPUT VALUE NOT PERSISTING
+   -------------------------------------
+   ROOT CAUSE: Only checked get_search_query()
+   FIX: Checks $_GET['s'], $_GET['query'], and get_search_query()
+   BENEFIT: Search value persists after submit/refresh
+   
+   Files: FrontendManager.php, ShortcodeManager.php
+
+══════════════════════════════════════════════════════════════════════════════
+
+🎯 IMPROVEMENTS IN 2.8.1:
+==========================
+
+Result Card Design:
+-------------------
+✓ Removed technical score badges (87%)
+✓ Removed type badges (Post/Page)
+✓ Added Primary Category badge (🏷️ Environmental)
+✓ Added Reading Time (📖 5 min read)
+✓ Added Last Updated (📅 Updated Oct 2025)
+✓ Professional, user-focused design
+
+Contact Button for Professionals:
+----------------------------------
+✓ Shows for SCS Professionals automatically
+✓ Accepts 7 post type variations
+✓ Styled with brand color #6F94A9
+✓ Includes data-staffid attribute
+✓ CSS scoped to shortcode only
+
+Pagination:
+-----------
+✓ Fetches 50 results from API
+✓ Paginates locally (cached, instant)
+✓ Accurate "has_more" calculation
+✓ Smooth infinite scroll
+✓ No false "no more results" messages
+
+Debugging:
+----------
+✓ Added console logs for contact button
+✓ Added error logs for pagination
+✓ Shows actual post type in logs
+✓ Easy to identify issues
+
+══════════════════════════════════════════════════════════════════════════════
+
+📦 FILES MODIFIED IN 2.8.1:
+============================
+
+Core:
+-----
+✅ wordpress-plugin/hybrid-search.php (version 2.8.0 → 2.8.1)
+
+AJAX/Search:
+------------
+✅ wordpress-plugin/includes/AJAX/AJAXManager.php
+   - Fetch 50 results from API
+   - Fixed pagination calculation
+   - Enhanced contact button type checking
+
+Frontend:
+---------
+✅ wordpress-plugin/includes/Frontend/FrontendManager.php
+   - Updated result card rendering (PHP template)
+   - Updated inline JavaScript rendering
+   - Fixed search input persistence
+   - Enhanced contact button logic
+
+✅ wordpress-plugin/includes/Frontend/ShortcodeManager.php
+   - Fixed search input persistence
+
+CSS:
+----
+✅ wordpress-plugin/assets/css/hybrid-search-enhanced.css
+   - Version 2.8.0 → 2.8.1
+   - Scoped contact button CSS
+
+JavaScript:
+-----------
+✅ wordpress-plugin/assets/js/hybrid-search-integration.js
+   - Updated createResultCard() function
+   - Added shouldShowContactButton() helper
+   - Removed score/type badge rendering
+   - Added Priority 1 metadata rendering
+
+══════════════════════════════════════════════════════════════════════════════
+
+🎨 VISUAL CHANGES:
+==================
+
+Result Card (BEFORE 2.8.1):
+---------------------------
+Environmental Services
+─────────────────────
+Excerpt text here...
+⭐ Score: 87% | 📄 Post | Date
+
+Result Card (AFTER 2.8.1):
+---------------------------
+Environmental Services
+─────────────────────
+Excerpt text here...
+─────────────────────
+🏷️ Environmental | 📖 5 min read | 📅 Updated Oct 2025
+
+SCS Professional (AFTER 2.8.1):
+--------------------------------
+James Walsh
+─────────────────────
+Senior Environmental Engineer...
+─────────────────────
+🏷️ Leadership | 📖 3 min read | 📅 Updated Today
+─────────────────────
+✉ Contact James Walsh
+
+══════════════════════════════════════════════════════════════════════════════
+
+🔧 TECHNICAL DETAILS:
+=====================
+
+API Request Strategy:
+---------------------
+First page: limit=50, offset=0 → Get 50 results, cache them
+Subsequent: Served from cache, no new API call
+Result: Fast pagination with single API call
+
+Pagination Calculation:
+-----------------------
+$has_more_results = ($offset + $limit) < $total_after_filters;
+
+Example (42 results total):
+- Page 1 (0-10): (0+10) < 42 = TRUE
+- Page 2 (10-20): (10+10) < 42 = TRUE
+- Page 3 (20-30): (20+10) < 42 = TRUE
+- Page 4 (30-40): (30+10) < 42 = TRUE
+- Page 5 (40-50): (40+10) < 42 = FALSE ✓
+
+Contact Button Types:
+---------------------
+Accepts: scs-professional, scs_professional, professional, 
+         scs-professionals, scs_professionals, team, staff
+
+══════════════════════════════════════════════════════════════════════════════
+
+📝 DEPLOYMENT:
+==============
+
+Upload All Modified Files:
+---------------------------
+1. wordpress-plugin/hybrid-search.php
+2. wordpress-plugin/includes/AJAX/AJAXManager.php
+3. wordpress-plugin/includes/Frontend/FrontendManager.php
+4. wordpress-plugin/includes/Frontend/ShortcodeManager.php
+5. wordpress-plugin/assets/css/hybrid-search-enhanced.css
+6. wordpress-plugin/assets/js/hybrid-search-integration.js
+
+After Upload:
+-------------
+1. Clear WordPress cache (if using cache plugin)
+2. Clear browser cache (Ctrl+Shift+R / Cmd+Shift+R)
+3. Test pagination with search that has many results
+4. Test contact button on professional profiles
+5. Verify search input persists after submit
+
+Testing Checklist:
+------------------
+□ Pagination works - loads more than 10 results
+□ Result cards show new metadata (category, time, updated)
+□ No score/type badges showing
+□ Contact button appears for professionals
+□ Search input value persists
+□ Contact button CSS only affects shortcode
+□ Infinite scroll smooth and accurate
+
+══════════════════════════════════════════════════════════════════════════════
+
+🎉 VERSION 2.8.1 READY FOR DEPLOYMENT!
+
+This is a critical bugfix release that fixes pagination and
+completes the professional card redesign.
+
+All 6 files updated and ready to upload! 🚀
+

@@ -30,3 +30,6 @@ httpx==0.25.2
 
 # Environment and Logging
 python-dotenv==1.0.0
+
+# MCP Server Support
+mcp==0.9.0

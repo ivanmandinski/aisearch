@@ -1,0 +1,102 @@
+✅ CACHE CLEAR SECURITY FIX!
+
+🐛 THE PROBLEM:
+===============
+Clicking "Clear Search Cache" showed: "Security validation failed"
+
+ROOT CAUSE:
+-----------
+JavaScript was sending WRONG nonce parameters:
+❌ Field name: '_wpnonce' (should be 'nonce')
+❌ Nonce action: 'clear_search_cache' (should be 'handleClearCache')
+
+The AJAX handler checks for:
+- $_POST['nonce'] (not $_POST['_wpnonce'])
+- Nonce action must be the handler method name
+
+✅ THE FIX:
+===========
+
+File: wordpress-plugin/includes/Admin/AdminManager.php
+Line: 490-491
+
+BEFORE (WRONG):
+---------------
+jQuery.post(ajaxurl, {
+    action: 'clear_search_cache',
+    _wpnonce: '<?php echo wp_create_nonce('clear_search_cache'); ?>'
+}, ...
+
+AFTER (CORRECT):
+----------------
+jQuery.post(ajaxurl, {
+    action: 'clear_search_cache',
+    nonce: '<?php echo wp_create_nonce('handleClearCache'); ?>'
+}, ...
+
+Changes:
+--------
+✓ _wpnonce → nonce (field name)
+✓ 'clear_search_cache' → 'handleClearCache' (nonce action matches handler)
+
+══════════════════════════════════════════════════════════════════════════════
+
+📦 UPLOAD THIS FILE:
+====================
+
+✅ wordpress-plugin/includes/Admin/AdminManager.php
+   - Line 490-491: Fixed nonce parameters
+
+══════════════════════════════════════════════════════════════════════════════
+
+🚀 AFTER UPLOAD:
+================
+
+1. Upload AdminManager.php
+
+2. Go to: WordPress Admin → Hybrid Search → Dashboard
+
+3. Click: "Clear Search Cache" button
+
+4. Should now work! You'll see:
+   - Button changes to "🔄 Clearing..."
+   - Success alert: "Search cache cleared successfully!"
+   - Button shows "✓ Cleared!" for 2 seconds
+   - Then restores to normal
+
+5. Console will show:
+   Clear cache response: {success: true, data: {...}}
+
+══════════════════════════════════════════════════════════════════════════════
+
+🔍 HOW NONCE SECURITY WORKS:
+=============================
+
+WordPress AJAX Security Flow:
+------------------------------
+1. Frontend creates nonce: wp_create_nonce('ACTION_NAME')
+2. Frontend sends: { action: 'clear_search_cache', nonce: 'xxxxx' }
+3. Backend checks: wp_verify_nonce($_POST['nonce'], 'ACTION_NAME')
+4. ACTION_NAME must match the handler method name!
+
+For this plugin:
+----------------
+- AJAX action: 'clear_search_cache'
+- Handler method: 'handleClearCache'
+- Nonce action: 'handleClearCache' (must match handler!)
+- Field name: 'nonce' (what Security class expects)
+
+Other Examples in Plugin:
+--------------------------
+- Action: 'hybrid_search' → Handler: 'handleSearch'
+- Action: 'reindex_content' → Handler: 'handleReindexContent'
+- Action: 'clear_search_cache' → Handler: 'handleClearCache'
+
+══════════════════════════════════════════════════════════════════════════════
+
+✨ SECURITY FIX COMPLETE!
+
+Upload AdminManager.php and the cache clear button will work!
+
+Click it → Cache clears → Pagination works! 🚀
+
