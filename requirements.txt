@@ -9,14 +9,14 @@ llama-index==0.10.43
 llama-index-core==0.10.43
 
 # Vector Database
-qdrant-client==1.7.0
+qdrant-client==1.15.1
 
 # LLM Providers
 openai==1.3.7
 
 # Machine Learning & NLP
-scikit-learn==1.3.2
-numpy==1.24.3
+scikit-learn>=1.4.0
+numpy>=1.26.0
 
 # Lightweight embeddings (no heavy PyTorch)
 # Option 1: Skip for now, use fallback (fastest)
@@ -30,6 +30,3 @@ httpx==0.25.2
 
 # Environment and Logging
 python-dotenv==1.0.0
-
-# MCP Server Support
-mcp==0.9.0
