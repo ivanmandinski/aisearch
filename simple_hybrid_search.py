@@ -245,6 +245,7 @@ class SimpleHybridSearch:
         self, 
         query: str, 
         limit: int = 10,
+        offset: int = 0,
         enable_ai_reranking: bool = True,
         ai_weight: float = 0.7,
         ai_reranking_instructions: str = "",
@@ -256,6 +257,7 @@ class SimpleHybridSearch:
         Args:
             query: Search query
             limit: Number of results to return
+            offset: Number of results to skip (for pagination)
             enable_ai_reranking: Whether to use AI reranking
             ai_weight: Weight for AI score (0-1), higher = more AI influence
             ai_reranking_instructions: Custom instructions for AI reranking
@@ -324,9 +326,10 @@ class SimpleHybridSearch:
                     reranked = reranking_result['results']
                     metadata = reranking_result['metadata']
                     
-                    # Return top N after reranking
-                    logger.info(f"✅ AI reranking successful, returning top {limit} results")
-                    return reranked[:limit], metadata
+                    # Apply offset and return top N after reranking
+                    paginated_results = reranked[offset:offset + limit]
+                    logger.info(f"✅ AI reranking successful, returning {len(paginated_results)} results (offset={offset}, limit={limit})")
+                    return paginated_results, metadata
                     
                 except Exception as e:
                     logger.error(f"AI reranking failed: {e}, falling back to TF-IDF results")
@@ -337,21 +340,23 @@ class SimpleHybridSearch:
                 elif not self.llm_client:
                     logger.warning("LLM client not available, using TF-IDF results")
             
-            # No AI reranking, return TF-IDF results
-            return candidates[:limit], {
+            # No AI reranking, return TF-IDF results with offset
+            paginated_results = candidates[offset:offset + limit]
+            return paginated_results, {
                 'ai_reranking_used': False,
-                'reason': 'AI reranking disabled or unavailable'
+                'reason': 'AI reranking disabled or unavailable',
+                'total_results': len(candidates)
             }
             
         except Exception as e:
             logger.error(f"Error in search: {e}")
             return [], {'error': str(e)}
     
-    async def search_with_answer(self, query: str, limit: int = 5, custom_instructions: str = "") -> Dict[str, Any]:
+    async def search_with_answer(self, query: str, limit: int = 5, offset: int = 0, custom_instructions: str = "") -> Dict[str, Any]:
         """Search and generate AI answer."""
         try:
             # Get search results (without AI reranking for answer generation to save cost)
-            results, _ = await self.search(query, limit, enable_ai_reranking=False)
+            results, _ = await self.search(query, limit, offset, enable_ai_reranking=False)
             
             if not results:
                 return {

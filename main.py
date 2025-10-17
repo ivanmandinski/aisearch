@@ -286,40 +286,42 @@ async def search(request: SearchRequest):
             try:
                 result = await search_system.search_with_answer(
                     search_query, 
-                    limit=request.limit + request.offset,  # Get enough results for offset
+                    limit=request.limit,  # Only get the requested amount
+                    offset=request.offset,  # Pass offset directly to search system
                     custom_instructions=request.ai_instructions
                 )
-                # Apply offset after getting results
-                all_results = result.get('sources', [])
-                results = all_results[request.offset:request.offset + request.limit]
+                # Results are already paginated by the search system
+                results = result.get('sources', [])
                 answer = result.get('answer')
-                total_results = len(all_results)
+                total_results = result.get('total_results', len(results))
             except Exception as e:
                 logger.error(f"Search with answer failed: {e}")
                 # Fallback to basic search
                 all_results, search_metadata = await search_system.search(
                     query=search_query,
-                    limit=request.limit + request.offset,  # Get enough for offset
+                    limit=request.limit,
+                    offset=request.offset,
                     enable_ai_reranking=request.enable_ai_reranking,
                     ai_weight=request.ai_weight,
                     ai_reranking_instructions=request.ai_reranking_instructions
                 )
-                results = all_results[request.offset:request.offset + request.limit]
+                results = all_results
                 answer = None
-                total_results = len(all_results)
+                total_results = search_metadata.get('total_results', len(results))
         else:
             # Regular search with AI reranking
             all_results, search_metadata = await search_system.search(
                 query=search_query,
-                limit=request.limit + request.offset,  # Get enough results for offset
+                limit=request.limit,
+                offset=request.offset,
                 enable_ai_reranking=request.enable_ai_reranking,
                 ai_weight=request.ai_weight,
                 ai_reranking_instructions=request.ai_reranking_instructions
             )
-            # Apply offset to slice results
-            results = all_results[request.offset:request.offset + request.limit]
+            # Results are already paginated by the search system
+            results = all_results
             answer = None
-            total_results = len(all_results)
+            total_results = search_metadata.get('total_results', len(results))
         
         # Apply filters if provided
         if request.filters:
