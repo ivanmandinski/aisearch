@@ -43,7 +43,7 @@ class WordPressContentFetcher:
                         "per_page": per_page,
                         "page": page,
                         "status": "publish",
-                        "_embed": False  # Disable embedding to reduce response size
+                        "_embed": True  # Enable embedding to get featured media
                     }
                 )
                 response.raise_for_status()
@@ -91,7 +91,7 @@ class WordPressContentFetcher:
                         "per_page": per_page,
                         "page": page,
                         "status": "publish",
-                        "_embed": False  # Disable embedding
+                        "_embed": True  # Enable embedding to get featured media
                     }
                 )
                 response.raise_for_status()
@@ -185,6 +185,9 @@ class WordPressContentFetcher:
             if excerpt_raw:
                 processed["excerpt"] = self.clean_html_content(excerpt_raw)
             
+            # Extract featured image
+            processed["featured_image"] = self._extract_featured_image(item)
+            
             # Extract categories and tags safely
             try:
                 if "_embedded" in item and "wp:term" in item["_embedded"]:
@@ -225,6 +228,51 @@ class WordPressContentFetcher:
                 "content": "Content processing error",
                 "word_count": 0
             }
+    
+    def _extract_featured_image(self, item: Dict[str, Any]) -> str:
+        """Extract featured image URL from WordPress item."""
+        try:
+            # Check for featured_media field
+            featured_media_id = item.get("featured_media", 0)
+            if featured_media_id and featured_media_id > 0:
+                # Look for embedded media
+                if "_embedded" in item and "wp:featuredmedia" in item["_embedded"]:
+                    for media in item["_embedded"]["wp:featuredmedia"]:
+                        if str(media.get("id", "")) == str(featured_media_id):
+                            # Get the source URL
+                            media_details = media.get("media_details", {})
+                            if media_details:
+                                sizes = media_details.get("sizes", {})
+                                # Try different sizes in order of preference
+                                for size_name in ["medium_large", "medium", "large", "full"]:
+                                    if size_name in sizes:
+                                        source_url = sizes[size_name].get("source_url", "")
+                                        if source_url:
+                                            return source_url
+                                # Fallback to any available size
+                                for size_data in sizes.values():
+                                    source_url = size_data.get("source_url", "")
+                                    if source_url:
+                                        return source_url
+            
+            # Fallback: check for direct image URLs in content
+            content = self._safe_get_text(item.get("content", {}), "rendered", "")
+            if content:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(content, 'html.parser')
+                img_tags = soup.find_all('img')
+                if img_tags:
+                    # Return the first image found
+                    first_img = img_tags[0]
+                    src = first_img.get('src', '')
+                    if src and src.startswith('http'):
+                        return src
+            
+            return ""
+            
+        except Exception as e:
+            logger.error(f"Error extracting featured image: {e}")
+            return ""
     
     def _safe_get_text(self, obj: Dict, key: str, default: str = "") -> str:
         """Safely get text from nested dictionary."""

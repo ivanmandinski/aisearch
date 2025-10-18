@@ -1,0 +1,406 @@
+/* ========================================
+   IMPROVED HYBRID SEARCH CARD DESIGN
+   ======================================== */
+
+/* Main Results Container */
+.hybrid-search-results {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+/* Enhanced Card Structure */
+.hybrid-search-result {
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 20px;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.hybrid-search-result:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
+    border-color: #d1d5db;
+}
+
+/* Card Header with Title and Meta */
+.hybrid-search-result-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 12px;
+    gap: 16px;
+}
+
+.hybrid-search-result-title {
+    font-size: 1.25rem;
+    font-weight: 600;
+    line-height: 1.4;
+    margin: 0;
+    flex: 1;
+}
+
+.hybrid-search-result-title a {
+    color: #1f2937;
+    text-decoration: none;
+    transition: color 0.2s ease;
+}
+
+.hybrid-search-result-title a:hover {
+    color: #3b82f6;
+}
+
+/* Relevance Score Badge */
+.hybrid-search-result-score {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: #f0f9ff;
+    color: #0369a1;
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.relevance-bar {
+    width: 40px;
+    height: 3px;
+    background: #e0f2fe;
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.relevance-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #3b82f6, #1d4ed8);
+    transition: width 0.3s ease;
+}
+
+/* Content Type Badge */
+.hybrid-search-result-type {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 12px;
+}
+
+.result-type-page {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.result-type-post {
+    background: #e0e7ff;
+    color: #3730a3;
+}
+
+.result-type-product {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+/* Excerpt with Better Typography */
+.hybrid-search-result-excerpt {
+    color: #4b5563;
+    line-height: 1.6;
+    margin-bottom: 16px;
+    font-size: 0.95rem;
+}
+
+/* Meta Information Row */
+.hybrid-search-result-meta {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-size: 0.875rem;
+    color: #6b7280;
+    flex-wrap: wrap;
+}
+
+.hybrid-search-result-author {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.hybrid-search-result-author::before {
+    content: "👤";
+    font-size: 0.75rem;
+}
+
+.hybrid-search-result-date {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.hybrid-search-result-date::before {
+    content: "📅";
+    font-size: 0.75rem;
+}
+
+/* Reading Time */
+.hybrid-search-result-reading-time {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: #9ca3af;
+}
+
+.hybrid-search-result-reading-time::before {
+    content: "⏱️";
+    font-size: 0.75rem;
+}
+
+/* Categories and Tags */
+.hybrid-search-result-categories,
+.hybrid-search-result-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 12px;
+}
+
+.hybrid-search-result-categories a,
+.hybrid-search-result-tags a {
+    display: inline-block;
+    padding: 2px 8px;
+    background: #f3f4f6;
+    color: #374151;
+    text-decoration: none;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    transition: all 0.2s ease;
+}
+
+.hybrid-search-result-categories a:hover,
+.hybrid-search-result-tags a:hover {
+    background: #e5e7eb;
+    color: #1f2937;
+}
+
+/* Card with Thumbnail Layout */
+.hybrid-search-result.has-thumbnail {
+    display: flex;
+    gap: 16px;
+    padding: 16px;
+}
+
+.hybrid-search-result-thumbnail {
+    flex-shrink: 0;
+    width: 120px;
+    height: 80px;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #f9fafb;
+}
+
+.hybrid-search-result-thumbnail img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform 0.2s ease;
+}
+
+.hybrid-search-result.has-thumbnail:hover .hybrid-search-result-thumbnail img {
+    transform: scale(1.05);
+}
+
+.hybrid-search-result.has-thumbnail .hybrid-search-result-content {
+    flex: 1;
+}
+
+/* Featured Result (First Result) */
+.hybrid-search-result.featured {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+}
+
+.hybrid-search-result.featured .hybrid-search-result-title a {
+    color: white;
+}
+
+.hybrid-search-result.featured .hybrid-search-result-excerpt {
+    color: rgba(255, 255, 255, 0.9);
+}
+
+.hybrid-search-result.featured .hybrid-search-result-meta {
+    color: rgba(255, 255, 255, 0.8);
+}
+
+.hybrid-search-result.featured .hybrid-search-result-type {
+    background: rgba(255, 255, 255, 0.2);
+    color: white;
+}
+
+/* Mobile Responsive */
+@media (max-width: 768px) {
+    .hybrid-search-results {
+        gap: 12px;
+        padding: 0 16px;
+    }
+    
+    .hybrid-search-result {
+        padding: 16px;
+    }
+    
+    .hybrid-search-result.has-thumbnail {
+        flex-direction: column;
+        padding: 16px;
+    }
+    
+    .hybrid-search-result-thumbnail {
+        width: 100%;
+        height: 120px;
+    }
+    
+    .hybrid-search-result-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+    }
+    
+    .hybrid-search-result-meta {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+    }
+    
+    .hybrid-search-result-title {
+        font-size: 1.125rem;
+    }
+}
+
+/* Dark Mode Support */
+@media (prefers-color-scheme: dark) {
+    .hybrid-search-result {
+        background: #1f2937;
+        border-color: #374151;
+        color: #f9fafb;
+    }
+    
+    .hybrid-search-result-title a {
+        color: #f9fafb;
+    }
+    
+    .hybrid-search-result-title a:hover {
+        color: #60a5fa;
+    }
+    
+    .hybrid-search-result-excerpt {
+        color: #d1d5db;
+    }
+    
+    .hybrid-search-result-meta {
+        color: #9ca3af;
+    }
+}
+
+/* Loading State for Cards */
+.hybrid-search-result.loading {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+.hybrid-search-result.loading::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+    animation: shimmer 1.5s infinite;
+}
+
+@keyframes shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+}
+
+/* Empty State */
+.hybrid-search-no-results {
+    text-align: center;
+    padding: 60px 20px;
+    color: #6b7280;
+}
+
+.hybrid-search-no-results-icon {
+    font-size: 3rem;
+    margin-bottom: 16px;
+}
+
+.hybrid-search-no-results-title {
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: #374151;
+}
+
+.hybrid-search-no-results-text {
+    font-size: 1rem;
+    margin-bottom: 24px;
+}
+
+/* Search Suggestions */
+.hybrid-search-suggestions {
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    max-height: 300px;
+    overflow-y: auto;
+    margin-top: 8px;
+}
+
+.hybrid-search-suggestion-item {
+    padding: 12px 16px;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+    border-bottom: 1px solid #f3f4f6;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.hybrid-search-suggestion-item:hover {
+    background-color: #f9fafb;
+}
+
+.hybrid-search-suggestion-item:last-child {
+    border-bottom: none;
+}
+
+.hybrid-search-suggestion-icon {
+    font-size: 1.25rem;
+    opacity: 0.6;
+}
+
+.hybrid-search-suggestion-text {
+    flex: 1;
+    font-weight: 500;
+}
+
+.hybrid-search-suggestion-type {
+    font-size: 0.75rem;
+    color: #6b7280;
+    background: #f3f4f6;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
