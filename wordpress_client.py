@@ -189,6 +189,9 @@ class WordPressContentFetcher:
             featured_image = self._extract_featured_image(item)
             processed["featured_image"] = featured_image
             
+            # Pass the featured_media ID for frontend URL construction
+            processed["featured_media"] = item.get("featured_media", 0)
+            
             # If no featured image, try to extract from content
             if not featured_image:
                 processed["featured_image"] = self._extract_image_from_content(raw_content)
@@ -235,12 +238,12 @@ class WordPressContentFetcher:
             }
     
     def _extract_featured_image(self, item: Dict[str, Any]) -> str:
-        """Extract featured image URL from WordPress item."""
+        """Extract featured image URL from WordPress item using multiple methods."""
         try:
             logger.info(f"Extracting featured image for item {item.get('id', 'unknown')}")
             logger.info(f"Item keys: {list(item.keys())}")
             
-            # Check for featured_media field
+            # Method 1: Check for featured_media field
             featured_media_id = item.get("featured_media", 0)
             logger.info(f"Featured media ID: {featured_media_id}")
             
@@ -283,7 +286,16 @@ class WordPressContentFetcher:
                 else:
                     logger.warning("No _embedded data found")
             
-            # Fallback: check for direct image URLs in content
+            # Method 2: Check for direct image fields in the item
+            direct_image_fields = ['featured_image', 'thumbnail', 'image', 'featured_image_url', 'post_thumbnail']
+            for field in direct_image_fields:
+                if field in item and item[field]:
+                    image_url = str(item[field]).strip()
+                    if image_url and image_url != '0' and image_url != 'false':
+                        logger.info(f"Found direct image in field '{field}': {image_url}")
+                        return image_url
+            
+            # Method 3: Check for image in content
             content = self._safe_get_text(item.get("content", {}), "rendered", "")
             if content:
                 logger.info("Checking content for images as fallback")
@@ -297,6 +309,23 @@ class WordPressContentFetcher:
                     if src and src.startswith('http'):
                         logger.info(f"Found fallback image in content: {src}")
                         return src
+            
+            # Method 4: Try to construct image URL from WordPress site
+            if featured_media_id and featured_media_id > 0:
+                # Try to construct the image URL directly
+                base_url = self.base_url.replace('/wp-json/wp/v2', '')
+                potential_urls = [
+                    f"{base_url}/wp-content/uploads/{featured_media_id}.jpg",
+                    f"{base_url}/wp-content/uploads/{featured_media_id}.png",
+                    f"{base_url}/wp-content/uploads/{featured_media_id}.jpeg",
+                    f"{base_url}/wp-content/uploads/{featured_media_id}.webp"
+                ]
+                
+                # Note: We can't test these URLs here, but we can return the first one
+                # The frontend will handle the onerror case
+                if potential_urls:
+                    logger.info(f"Trying constructed URL: {potential_urls[0]}")
+                    return potential_urls[0]
             
             logger.warning(f"No featured image found for item {item.get('id', 'unknown')}")
             return ""

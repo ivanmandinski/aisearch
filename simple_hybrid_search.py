@@ -306,7 +306,7 @@ class SimpleHybridSearch:
             candidates = all_candidates[:initial_limit]
             
             if not candidates:
-                return [], {'ai_reranking_used': False, 'message': 'No results found'}
+                return [], {'ai_reranking_used': False, 'message': 'No results found', 'total_results': 0}
             
             # Step 2: AI Reranking (if enabled and LLM client available)
             if enable_ai_reranking and self.llm_client:
@@ -325,6 +325,9 @@ class SimpleHybridSearch:
                     
                     reranked = reranking_result['results']
                     metadata = reranking_result['metadata']
+                    
+                    # Ensure total_results is included in metadata
+                    metadata['total_results'] = len(candidates)
                     
                     # Apply offset and return top N after reranking
                     paginated_results = reranked[offset:offset + limit]
@@ -350,20 +353,21 @@ class SimpleHybridSearch:
             
         except Exception as e:
             logger.error(f"Error in search: {e}")
-            return [], {'error': str(e)}
+            return [], {'error': str(e), 'total_results': 0}
     
     async def search_with_answer(self, query: str, limit: int = 5, offset: int = 0, custom_instructions: str = "") -> Dict[str, Any]:
         """Search and generate AI answer."""
         try:
             # Get search results (without AI reranking for answer generation to save cost)
-            results, _ = await self.search(query, limit, offset, enable_ai_reranking=False)
+            results, search_metadata = await self.search(query, limit, offset, enable_ai_reranking=False)
             
             if not results:
                 return {
                     'query': query,
                     'answer': "I couldn't find any relevant information to answer your question.",
                     'sources': [],
-                    'source_count': 0
+                    'source_count': 0,
+                    'total_results': 0
                 }
             
             # Generate answer using LLM with custom instructions
@@ -381,7 +385,8 @@ class SimpleHybridSearch:
                 'query': query,
                 'answer': answer,
                 'sources': results,
-                'source_count': len(results)
+                'source_count': len(results),
+                'total_results': search_metadata.get('total_results', len(results))
             }
             
         except Exception as e:
@@ -390,7 +395,8 @@ class SimpleHybridSearch:
                 'query': query,
                 'answer': "I encountered an error while generating an answer.",
                 'sources': [],
-                'source_count': 0
+                'source_count': 0,
+                'total_results': 0
             }
     
     async def _get_embedding(self, text: str) -> List[float]:
