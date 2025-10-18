@@ -1,0 +1,163 @@
+# Hybrid Search Plugin - Version 2.10.0 Changelog
+
+## Release Date: January 2025
+
+## 🎨 Major Design Improvements
+
+### New Horizontal Card Layout
+- **Complete redesign** of search result cards with modern horizontal layout
+- **Left section**: Thumbnail/image area (200px wide) with hover zoom effects
+- **Right section**: Content area with improved typography and spacing
+- **Mobile responsive**: Cards stack vertically on mobile devices
+
+### Enhanced Visual Hierarchy
+- **Better typography** with improved font weights and sizes
+- **Cleaner spacing** with reduced padding (20px vs 30px)
+- **Smooth hover effects** with subtle animations
+- **Modern border radius** (16px) for contemporary look
+
+## 🔧 Functional Improvements
+
+### Post Type System
+- **Removed author section** as requested
+- **Added post type badges** with color-coded icons:
+  - 📄 **Pages** (blue theme)
+  - 📝 **Posts** (purple theme)
+  - 👨‍💼 **SCS Professional** (green theme)
+  - 🛍️ **Products** (teal theme)
+  - 📅 **Events** (orange theme)
+  - 📊 **Case Studies** (indigo theme)
+
+### Archive Links
+- **"View All [Post Type]"** links for each content type
+- **Smart URL generation** based on post type
+- **Hover effects** for better user experience
+
+### Contact Button Integration
+- **Contact button** automatically appears for SCS Professional posts
+- **Green gradient styling** with phone icon
+- **Integrates with existing contact modal** functionality
+- **Fallback to contact page** if modal not available
+
+## 📊 Enhanced Features
+
+### Reading Time Estimates
+- **Automatic calculation** based on word count
+- **Visual clock icon** (⏱️) for better recognition
+- **Accurate estimates** using 200 words per minute standard
+
+### Relevance Scoring
+- **Score display** showing percentage relevance
+- **Visual indicators** for result quality
+- **Better user understanding** of search results
+
+### Thumbnail Support
+- **Featured image display** when available
+- **Fallback design** for posts without images
+- **Lazy loading** for better performance
+- **Hover zoom effects** for visual appeal
+
+## 🐛 Bug Fixes
+
+### Pagination Improvements
+- **Fixed duplicate content** issue when clicking "Load More"
+- **Improved backend pagination** logic
+- **Simplified frontend pagination** handling
+- **Better offset calculation** for accurate results
+
+### Performance Optimizations
+- **Reduced CSS complexity** for faster rendering
+- **Optimized JavaScript** for better performance
+- **Improved mobile responsiveness** with better touch targets
+
+## 📱 Mobile Enhancements
+
+### Responsive Design
+- **Mobile-first approach** with proper breakpoints
+- **Touch-friendly buttons** and interactive elements
+- **Optimized spacing** for smaller screens
+- **Full-width contact buttons** on mobile
+
+### Cross-Device Compatibility
+- **Consistent experience** across all devices
+- **Proper scaling** for tablets and phones
+- **Accessible design** with proper contrast ratios
+
+## 🔧 Technical Changes
+
+### CSS Updates
+- **New horizontal card structure** with flexbox layout
+- **Enhanced hover states** with smooth transitions
+- **Better color scheme** with improved contrast
+- **Mobile-responsive** media queries
+
+### JavaScript Improvements
+- **Updated buildResultHTML()** function for new card structure
+- **Added helper functions**: getArchiveUrl() and openContactModal()
+- **Improved post type detection** with multiple variations
+- **Better error handling** and fallbacks
+
+### Code Quality
+- **Cleaner HTML structure** with semantic elements
+- **Better separation of concerns** between CSS and JavaScript
+- **Improved maintainability** with modular functions
+- **Enhanced documentation** and comments
+
+## 🚀 Performance Improvements
+
+### Loading Speed
+- **Reduced CSS file size** through optimization
+- **Faster JavaScript execution** with improved functions
+- **Better image loading** with lazy loading
+- **Optimized animations** for smooth performance
+
+### User Experience
+- **Faster search results** with improved pagination
+- **Better visual feedback** during loading states
+- **Smoother interactions** with optimized transitions
+- **More intuitive navigation** with clear visual hierarchy
+
+## 📋 Migration Notes
+
+### For Developers
+- **CSS classes updated** - check custom styling
+- **JavaScript functions changed** - update any custom integrations
+- **New HTML structure** - verify custom modifications
+- **Version constant updated** to 2.10.0
+
+### For Users
+- **Automatic update** - no action required
+- **Improved search experience** - better results display
+- **Enhanced mobile experience** - better touch interactions
+- **Professional contact integration** - easier to contact experts
+
+## 🔮 Future Considerations
+
+### Planned Features
+- **Dark mode support** (CSS prepared)
+- **Advanced filtering** options
+- **Search analytics** improvements
+- **AI answer enhancements**
+
+### Compatibility
+- **WordPress 5.0+** supported
+- **PHP 7.4+** required
+- **Modern browsers** optimized
+- **Mobile devices** fully supported
+
+---
+
+## Summary
+
+Version 2.10.0 represents a major design overhaul focused on improving user experience, visual appeal, and functionality. The new horizontal card layout provides a modern, professional appearance while maintaining excellent performance and mobile responsiveness.
+
+Key improvements include:
+- ✅ Modern horizontal card design
+- ✅ Post type system with archive links
+- ✅ Contact button integration for professionals
+- ✅ Fixed pagination duplication issues
+- ✅ Enhanced mobile responsiveness
+- ✅ Better visual hierarchy and typography
+- ✅ Improved performance and loading speed
+
+This update significantly enhances the search experience while maintaining backward compatibility and improving overall plugin performance.

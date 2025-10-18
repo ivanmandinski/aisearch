@@ -1,0 +1,48 @@
+# Hybrid Search Plugin - Version 2.10.1 Changelog
+
+## Release Date: January 2025
+
+## 🐛 Bug Fix
+
+### JavaScript Error Fix
+- **Fixed**: `ReferenceError: escapeHtml is not defined` error
+- **Added**: Missing `escapeHtml` function to JavaScript code
+- **Impact**: Search results now display properly without JavaScript errors
+
+## 🔧 Technical Details
+
+### What Was Fixed
+The `escapeHtml` function was being called in the `buildResultHTML` function but was not defined, causing:
+- JavaScript errors in browser console
+- Potential display issues with special characters
+- Security concerns with unescaped HTML content
+
+### Solution Implemented
+```javascript
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+```
+
+### Security Benefits
+- **XSS Prevention**: Safely escapes HTML special characters
+- **Content Safety**: Prevents malicious script injection
+- **Data Integrity**: Ensures proper display of user-generated content
+
+## 📋 Files Modified
+- `wordpress-plugin/hybrid-search.php` - Version updated to 2.10.1
+- `wordpress-plugin/includes/Frontend/FrontendManager.php` - Added escapeHtml function
+
+## ✅ Testing
+- Search results display correctly
+- No JavaScript errors in console
+- Special characters properly escaped
+- All card elements render properly
+
+---
+
+## Summary
+Version 2.10.1 is a critical bug fix that resolves JavaScript errors and ensures proper security handling of HTML content in search results. This patch release maintains all functionality from 2.10.0 while fixing the missing function error.

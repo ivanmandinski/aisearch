@@ -186,7 +186,12 @@ class WordPressContentFetcher:
                 processed["excerpt"] = self.clean_html_content(excerpt_raw)
             
             # Extract featured image
-            processed["featured_image"] = self._extract_featured_image(item)
+            featured_image = self._extract_featured_image(item)
+            processed["featured_image"] = featured_image
+            
+            # If no featured image, try to extract from content
+            if not featured_image:
+                processed["featured_image"] = self._extract_image_from_content(raw_content)
             
             # Extract categories and tags safely
             try:
@@ -232,32 +237,56 @@ class WordPressContentFetcher:
     def _extract_featured_image(self, item: Dict[str, Any]) -> str:
         """Extract featured image URL from WordPress item."""
         try:
+            logger.info(f"Extracting featured image for item {item.get('id', 'unknown')}")
+            logger.info(f"Item keys: {list(item.keys())}")
+            
             # Check for featured_media field
             featured_media_id = item.get("featured_media", 0)
+            logger.info(f"Featured media ID: {featured_media_id}")
+            
             if featured_media_id and featured_media_id > 0:
                 # Look for embedded media
-                if "_embedded" in item and "wp:featuredmedia" in item["_embedded"]:
-                    for media in item["_embedded"]["wp:featuredmedia"]:
-                        if str(media.get("id", "")) == str(featured_media_id):
-                            # Get the source URL
-                            media_details = media.get("media_details", {})
-                            if media_details:
-                                sizes = media_details.get("sizes", {})
-                                # Try different sizes in order of preference
-                                for size_name in ["medium_large", "medium", "large", "full"]:
-                                    if size_name in sizes:
-                                        source_url = sizes[size_name].get("source_url", "")
+                if "_embedded" in item:
+                    logger.info(f"Embedded keys: {list(item['_embedded'].keys())}")
+                    
+                    if "wp:featuredmedia" in item["_embedded"]:
+                        logger.info(f"Found wp:featuredmedia with {len(item['_embedded']['wp:featuredmedia'])} items")
+                        
+                        for media in item["_embedded"]["wp:featuredmedia"]:
+                            if str(media.get("id", "")) == str(featured_media_id):
+                                logger.info(f"Found matching media item: {media.get('id')}")
+                                
+                                # Get the source URL
+                                media_details = media.get("media_details", {})
+                                if media_details:
+                                    sizes = media_details.get("sizes", {})
+                                    logger.info(f"Available sizes: {list(sizes.keys())}")
+                                    
+                                    # Try different sizes in order of preference
+                                    for size_name in ["medium_large", "medium", "large", "full"]:
+                                        if size_name in sizes:
+                                            source_url = sizes[size_name].get("source_url", "")
+                                            if source_url:
+                                                logger.info(f"Found image URL ({size_name}): {source_url}")
+                                                return source_url
+                                    
+                                    # Fallback to any available size
+                                    for size_name, size_data in sizes.items():
+                                        source_url = size_data.get("source_url", "")
                                         if source_url:
+                                            logger.info(f"Found fallback image URL ({size_name}): {source_url}")
                                             return source_url
-                                # Fallback to any available size
-                                for size_data in sizes.values():
-                                    source_url = size_data.get("source_url", "")
-                                    if source_url:
-                                        return source_url
+                                else:
+                                    logger.warning(f"No media_details found for media {media.get('id')}")
+                    else:
+                        logger.warning("No wp:featuredmedia found in embedded data")
+                else:
+                    logger.warning("No _embedded data found")
             
             # Fallback: check for direct image URLs in content
             content = self._safe_get_text(item.get("content", {}), "rendered", "")
             if content:
+                logger.info("Checking content for images as fallback")
                 from bs4 import BeautifulSoup
                 soup = BeautifulSoup(content, 'html.parser')
                 img_tags = soup.find_all('img')
@@ -266,12 +295,37 @@ class WordPressContentFetcher:
                     first_img = img_tags[0]
                     src = first_img.get('src', '')
                     if src and src.startswith('http'):
+                        logger.info(f"Found fallback image in content: {src}")
+                        return src
+            
+            logger.warning(f"No featured image found for item {item.get('id', 'unknown')}")
+            return ""
+            
+        except Exception as e:
+            logger.error(f"Error extracting featured image: {e}")
+            return ""
+    
+    def _extract_image_from_content(self, content: str) -> str:
+        """Extract first image URL from content HTML."""
+        try:
+            if not content:
+                return ""
+            
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(content, 'html.parser')
+            img_tags = soup.find_all('img')
+            
+            if img_tags:
+                for img in img_tags:
+                    src = img.get('src', '')
+                    if src and (src.startswith('http') or src.startswith('/')):
+                        logger.info(f"Found image in content: {src}")
                         return src
             
             return ""
             
         except Exception as e:
-            logger.error(f"Error extracting featured image: {e}")
+            logger.error(f"Error extracting image from content: {e}")
             return ""
     
     def _safe_get_text(self, obj: Dict, key: str, default: str = "") -> str:
