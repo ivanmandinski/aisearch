@@ -208,6 +208,8 @@ class SimpleHybridSearch:
                         'excerpt': doc['excerpt'],
                         'content': doc['content'],
                         'word_count': doc['word_count'],
+                        'featured_image': doc.get('featured_image', ''),
+                        'featured_media': doc.get('featured_media', 0),
                         'embedding': embedding,
                         'sparse_vector': {}  # Will be filled after TF-IDF fitting
                     }
@@ -278,8 +280,13 @@ class SimpleHybridSearch:
                 except Exception as e:
                     logger.warning(f"Query expansion failed: {e}, using original query only")
             
-            # Step 1: Get initial candidates using TF-IDF (get more if using AI reranking)
+            # Step 1: Get candidates using TF-IDF with proper pagination
+            # For pagination to work correctly, we need to get a larger set of results
+            # and then apply offset/limit consistently
+            
+            # Calculate how many results we need to get to ensure we have enough for pagination
             initial_limit = min(limit * 3, 200) if enable_ai_reranking else limit
+            search_limit = max(initial_limit, offset + limit + 50)  # Get extra to ensure we have enough
             
             # Search with all expanded queries and combine results
             all_candidates = []
@@ -288,12 +295,12 @@ class SimpleHybridSearch:
             for search_query in search_queries:
                 # If we have TF-IDF fitted, use it for search
                 if self.tfidf_matrix is not None and len(self.documents) > 0:
-                    logger.info(f"Using TF-IDF search for '{search_query}' (getting {initial_limit} candidates)")
-                    query_candidates = self._tfidf_search(search_query, initial_limit)
+                    logger.info(f"Using TF-IDF search for '{search_query}' (getting {search_limit} candidates)")
+                    query_candidates = self._tfidf_search(search_query, search_limit, 0)  # Always start from 0 for initial search
                 else:
                     # Fallback to simple text search
-                    logger.info(f"Using simple text search for '{search_query}' (getting {initial_limit} candidates)")
-                    query_candidates = self._simple_text_search(search_query, initial_limit)
+                    logger.info(f"Using simple text search for '{search_query}' (getting {search_limit} candidates)")
+                    query_candidates = self._simple_text_search(search_query, search_limit)
                 
                 # Add unique candidates
                 for candidate in query_candidates:
@@ -303,7 +310,7 @@ class SimpleHybridSearch:
             
             # Sort combined candidates by score
             all_candidates.sort(key=lambda x: x.get('score', 0), reverse=True)
-            candidates = all_candidates[:initial_limit]
+            candidates = all_candidates
             
             if not candidates:
                 return [], {'ai_reranking_used': False, 'message': 'No results found', 'total_results': 0}
@@ -332,6 +339,7 @@ class SimpleHybridSearch:
                     # Apply offset and return top N after reranking
                     paginated_results = reranked[offset:offset + limit]
                     logger.info(f"✅ AI reranking successful, returning {len(paginated_results)} results (offset={offset}, limit={limit})")
+                    logger.info(f"🔍 AI RERANKING DEBUG: total_candidates={len(candidates)}, reranked_count={len(reranked)}, paginated_count={len(paginated_results)}")
                     return paginated_results, metadata
                     
                 except Exception as e:
@@ -345,6 +353,7 @@ class SimpleHybridSearch:
             
             # No AI reranking, return TF-IDF results with offset
             paginated_results = candidates[offset:offset + limit]
+            logger.info(f"🔍 TF-IDF DEBUG: total_candidates={len(candidates)}, offset={offset}, limit={limit}, paginated_count={len(paginated_results)}")
             return paginated_results, {
                 'ai_reranking_used': False,
                 'reason': 'AI reranking disabled or unavailable',
@@ -519,8 +528,8 @@ class SimpleHybridSearch:
             logger.error(f"Error getting stats: {e}")
             return {}
     
-    def _tfidf_search(self, query: str, limit: int) -> List[Dict[str, Any]]:
-        """Perform TF-IDF based search."""
+    def _tfidf_search(self, query: str, limit: int, offset: int = 0) -> List[Dict[str, Any]]:
+        """Perform TF-IDF based search with offset support."""
         try:
             # Transform query using fitted TF-IDF
             query_vector = self.tfidf_vectorizer.transform([query])
@@ -535,8 +544,13 @@ class SimpleHybridSearch:
             # Sort by similarity and get top results
             similarities.sort(key=lambda x: x[1], reverse=True)
             
+            # Apply offset and limit to get the correct slice
+            start_idx = offset
+            end_idx = offset + limit
+            paginated_similarities = similarities[start_idx:end_idx]
+            
             results = []
-            for i, (doc_idx, score) in enumerate(similarities[:limit]):
+            for i, (doc_idx, score) in enumerate(paginated_similarities):
                 if score > 0:  # Only include results with positive similarity
                     doc = self.documents[doc_idx]
                     result = {
@@ -549,11 +563,16 @@ class SimpleHybridSearch:
                         'author': doc.get('author', ''),
                         'categories': doc.get('categories', []),
                         'tags': doc.get('tags', []),
+                        'content': doc.get('content', ''),
+                        'word_count': doc.get('word_count', 0),
+                        'featured_image': doc.get('featured_image', ''),
+                        'featured_media': doc.get('featured_media', 0),
                         'score': float(score),
                         'relevance': 'high' if score > 0.1 else 'medium' if score > 0.05 else 'low'
                     }
                     results.append(result)
             
+            logger.info(f"TF-IDF search: query='{query}', offset={offset}, limit={limit}, results={len(results)}")
             return results
             
         except Exception as e:

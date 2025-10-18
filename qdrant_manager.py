@@ -93,6 +93,8 @@ class QdrantManager:
                     "excerpt": doc["excerpt"],
                     "content": doc["content"],
                     "word_count": doc["word_count"],
+                    "featured_image": doc.get("featured_image", ""),
+                    "featured_media": doc.get("featured_media", 0),
                     "text": f"{doc['title']} {doc['content']}"  # Combined text for search
                 }
                 

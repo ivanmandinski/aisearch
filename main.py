@@ -294,6 +294,11 @@ async def search(request: SearchRequest):
                 results = result.get('sources', [])
                 answer = result.get('answer')
                 total_results = result.get('total_results', len(results))
+                
+                # Debug: Check if featured_media is preserved in results
+                if results:
+                    logger.info(f"First result keys: {list(results[0].keys())}")
+                    logger.info(f"First result featured_media: {results[0].get('featured_media')}")
             except Exception as e:
                 logger.error(f"Search with answer failed: {e}")
                 # Fallback to basic search
@@ -322,6 +327,11 @@ async def search(request: SearchRequest):
             results = all_results
             answer = None
             total_results = search_metadata.get('total_results', len(results))
+            
+            # Debug: Check if featured_media is preserved in results
+            if results:
+                logger.info(f"Regular search - First result keys: {list(results[0].keys())}")
+                logger.info(f"Regular search - First result featured_media: {results[0].get('featured_media')}")
         
         # Apply filters if provided
         if request.filters:
@@ -350,7 +360,18 @@ async def search(request: SearchRequest):
         # Calculate pagination metadata
         has_more = (request.offset + request.limit) < total_results
         
-        logger.info(f"Pagination: offset={request.offset}, limit={request.limit}, total={total_results}, has_more={has_more}")
+        logger.info(f"🔍 PAGINATION DEBUG:")
+        logger.info(f"  - Request offset: {request.offset}")
+        logger.info(f"  - Request limit: {request.limit}")
+        logger.info(f"  - Total results: {total_results}")
+        logger.info(f"  - Results returned: {len(results)}")
+        logger.info(f"  - Has more: {has_more}")
+        logger.info(f"  - Next offset: {request.offset + request.limit}")
+        
+        # Debug: Show first few result IDs to check for duplicates
+        if results:
+            result_ids = [r.get('id', 'no-id') for r in results[:5]]
+            logger.info(f"  - First 5 result IDs: {result_ids}")
         
         # Return JSON response directly (avoid Pydantic serialization issues)
         response_content = {

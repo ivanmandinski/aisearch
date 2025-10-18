@@ -158,6 +158,11 @@ class WordPressContentFetcher:
     def process_content_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
         """Process a single WordPress content item."""
         try:
+            logger.info(f"Processing item: {item.get('id', 'unknown')} - {item.get('title', {}).get('rendered', 'No title')}")
+            logger.info(f"Available fields in item: {list(item.keys())}")
+            logger.info(f"Featured media field: {item.get('featured_media')}")
+            logger.info(f"Featured media type: {type(item.get('featured_media'))}")
+            
             # Extract basic information with safe defaults
             processed = {
                 "id": str(item.get("id", "")),
@@ -190,7 +195,9 @@ class WordPressContentFetcher:
             processed["featured_image"] = featured_image
             
             # Pass the featured_media ID for frontend URL construction
-            processed["featured_media"] = item.get("featured_media", 0)
+            featured_media_id = item.get("featured_media", 0)
+            processed["featured_media"] = featured_media_id
+            logger.info(f"Processed item {item.get('id', 'unknown')}: featured_media={featured_media_id}, type={type(featured_media_id)}")
             
             # If no featured image, try to extract from content
             if not featured_image:
