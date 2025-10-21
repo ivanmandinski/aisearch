@@ -26,7 +26,13 @@ class WordPressContentFetcher:
         self.client = httpx.AsyncClient(
             auth=auth,
             timeout=30.0,
-            headers={"User-Agent": "HybridSearchBot/1.0"}
+            limits=httpx.Limits(
+                max_keepalive_connections=20,
+                max_connections=100,
+                keepalive_expiry=30.0
+            ),
+            headers={"User-Agent": "HybridSearchBot/1.0"},
+            http2=True  # Enable HTTP/2 for better performance
         )
     
     async def fetch_all_posts(self) -> List[Dict[str, Any]]:

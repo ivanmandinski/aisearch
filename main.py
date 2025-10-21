@@ -5,6 +5,7 @@ import logging
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 import asyncio
@@ -12,6 +13,10 @@ from datetime import datetime
 import uvicorn
 
 from config import settings
+from input_validator import validate_search_request, validate_index_request, validate_document, sanitize_string
+from connection_manager import connection_manager, cleanup_connections
+from structured_logger import get_logger, set_request_context, clear_request_context, performance_logger, security_logger, business_logger
+from health_checker import get_health_status, get_quick_health_status
 
 # Try to import components with error handling
 try:
@@ -34,7 +39,7 @@ except ImportError as e:
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -52,6 +57,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add compression middleware
+app.add_middleware(
+    GZipMiddleware,
+    minimum_size=1000,  # Only compress responses larger than 1KB
+    compresslevel=6,    # Balanced compression level
+)
+
 # Global instances
 search_system = None
 llm_client = None
@@ -61,8 +73,7 @@ wp_client = None
 # Pydantic models
 class SearchRequest(BaseModel):
     query: str = Field(..., description="Search query")
-    limit: int = Field(default=10, ge=1, le=100, description="Maximum number of results per page")
-    offset: int = Field(default=0, ge=0, description="Offset for pagination")
+    limit: int = Field(default=10, ge=1, le=50, description="Maximum number of results")
     include_answer: bool = Field(default=False, description="Whether to include LLM-generated answer")
     filters: Optional[Dict[str, Any]] = Field(default=None, description="Search filters")
     ai_instructions: Optional[str] = Field(default=None, description="Custom AI instructions for answer generation")
@@ -163,6 +174,10 @@ async def shutdown_event():
             search_system.close()
         if wp_client:
             await wp_client.close()
+        
+        # Cleanup connection pools
+        await cleanup_connections()
+        
         logger.info("Hybrid search service shutdown completed")
     except Exception as e:
         logger.error(f"Error during shutdown: {e}")
@@ -190,55 +205,38 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
-    services_status = {}
-    
+    """Comprehensive health check endpoint."""
     try:
-        # Check Qdrant connection
-        if search_system:
-            try:
-                stats = search_system.get_stats()
-                services_status["qdrant"] = "healthy" if stats.get('total_documents', 0) >= 0 else "unhealthy"
-            except Exception as e:
-                services_status["qdrant"] = f"error: {str(e)}"
-        else:
-            services_status["qdrant"] = "not_initialized"
-        
-        # Check Cerebras LLM
-        if llm_client:
-            try:
-                if llm_client.test_connection():
-                    services_status["cerebras_llm"] = "healthy"
-                else:
-                    services_status["cerebras_llm"] = "connection_failed"
-            except Exception as e:
-                services_status["cerebras_llm"] = f"error: {str(e)}"
-        else:
-            services_status["cerebras_llm"] = "not_initialized"
-        
-        # Check WordPress connection
-        if wp_client:
-            services_status["wordpress"] = "initialized"
-        else:
-            services_status["wordpress"] = "not_initialized"
-        
-        overall_status = "healthy" if all(
-            status in ["healthy", "initialized"] 
-            for status in services_status.values()
-        ) else "degraded"
-        
+        health_data = await get_health_status()
+        return JSONResponse(content=health_data)
     except Exception as e:
-        logger.error(f"Health check error: {e}", exc_info=True)
-        services_status = {"error": str(e)}
-        overall_status = "unhealthy"
-    
-    return JSONResponse(
-        content={
-            "status": overall_status,
-            "timestamp": datetime.utcnow().isoformat(),
-            "services": services_status
-        }
-    )
+        logger.error(f"Health check failed: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "unhealthy",
+                "timestamp": datetime.utcnow().isoformat(),
+                "error": str(e)
+            }
+        )
+
+
+@app.get("/health/quick")
+async def quick_health_check():
+    """Quick health check endpoint."""
+    try:
+        health_data = await get_quick_health_status()
+        return JSONResponse(content=health_data)
+    except Exception as e:
+        logger.error(f"Quick health check failed: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "unknown",
+                "timestamp": datetime.utcnow().isoformat(),
+                "error": str(e)
+            }
+        )
 
 
 @app.post("/search")
@@ -247,6 +245,24 @@ async def search(request: SearchRequest):
     start_time = datetime.utcnow()
     
     try:
+        # Validate and sanitize request data
+        try:
+            validated_data = validate_search_request(request.dict())
+        except ValueError as e:
+            logger.warning(f"Search request validation failed: {e}")
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "error": str(e),
+                    "results": [],
+                    "metadata": {
+                        "query": request.query,
+                        "response_time": 0,
+                        "status_code": 400
+                    }
+                }
+            )
         # Check if search system is initialized
         if not search_system:
             logger.error("Search system not initialized")
@@ -279,59 +295,36 @@ async def search(request: SearchRequest):
         search_metadata = {}
         zero_result_data = None
         
-        # Log pagination parameters
-        logger.info(f"Search request: query='{search_query}', limit={request.limit}, offset={request.offset}")
-        
         if request.include_answer:
             try:
                 result = await search_system.search_with_answer(
                     search_query, 
-                    limit=request.limit,  # Only get the requested amount
-                    offset=request.offset,  # Pass offset directly to search system
+                    limit=request.limit, 
                     custom_instructions=request.ai_instructions
                 )
-                # Results are already paginated by the search system
                 results = result.get('sources', [])
                 answer = result.get('answer')
-                total_results = result.get('total_results', len(results))
-                
-                # Debug: Check if featured_media is preserved in results
-                if results:
-                    logger.info(f"First result keys: {list(results[0].keys())}")
-                    logger.info(f"First result featured_media: {results[0].get('featured_media')}")
             except Exception as e:
                 logger.error(f"Search with answer failed: {e}")
                 # Fallback to basic search
-                all_results, search_metadata = await search_system.search(
+                results, search_metadata = await search_system.search(
                     query=search_query,
                     limit=request.limit,
-                    offset=request.offset,
                     enable_ai_reranking=request.enable_ai_reranking,
                     ai_weight=request.ai_weight,
                     ai_reranking_instructions=request.ai_reranking_instructions
                 )
-                results = all_results
                 answer = None
-                total_results = search_metadata.get('total_results', len(results))
         else:
             # Regular search with AI reranking
-            all_results, search_metadata = await search_system.search(
+            results, search_metadata = await search_system.search(
                 query=search_query,
                 limit=request.limit,
-                offset=request.offset,
                 enable_ai_reranking=request.enable_ai_reranking,
                 ai_weight=request.ai_weight,
                 ai_reranking_instructions=request.ai_reranking_instructions
             )
-            # Results are already paginated by the search system
-            results = all_results
             answer = None
-            total_results = search_metadata.get('total_results', len(results))
-            
-            # Debug: Check if featured_media is preserved in results
-            if results:
-                logger.info(f"Regular search - First result keys: {list(results[0].keys())}")
-                logger.info(f"Regular search - First result featured_media: {results[0].get('featured_media')}")
         
         # Apply filters if provided
         if request.filters:
@@ -357,37 +350,13 @@ async def search(request: SearchRequest):
         
         processing_time = (datetime.utcnow() - start_time).total_seconds()
         
-        # Calculate pagination metadata
-        has_more = (request.offset + request.limit) < total_results
-        
-        logger.info(f"🔍 PAGINATION DEBUG:")
-        logger.info(f"  - Request offset: {request.offset}")
-        logger.info(f"  - Request limit: {request.limit}")
-        logger.info(f"  - Total results: {total_results}")
-        logger.info(f"  - Results returned: {len(results)}")
-        logger.info(f"  - Has more: {has_more}")
-        logger.info(f"  - Next offset: {request.offset + request.limit}")
-        
-        # Debug: Show first few result IDs to check for duplicates
-        if results:
-            result_ids = [r.get('id', 'no-id') for r in results[:5]]
-            logger.info(f"  - First 5 result IDs: {result_ids}")
-        
         # Return JSON response directly (avoid Pydantic serialization issues)
         response_content = {
             "success": True,
             "results": results,
-            "pagination": {
-                "offset": request.offset,
-                "limit": request.limit,
-                "has_more": has_more,
-                "next_offset": request.offset + request.limit,
-                "total_results": total_results
-            },
             "metadata": {
                 "query": request.query,
-                "total_results": total_results,
-                "returned_results": len(results),
+                "total_results": len(results),
                 "response_time": processing_time * 1000,  # Convert to milliseconds
                 "has_answer": answer is not None,
                 "answer": answer or "",

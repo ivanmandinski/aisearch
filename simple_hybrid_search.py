@@ -269,6 +269,16 @@ class SimpleHybridSearch:
             (results, metadata) tuple
         """
         try:
+            # Validate and sanitize pagination parameters
+            if offset < 0:
+                offset = 0
+            if limit < 1:
+                limit = 10
+            if limit > 100:  # Add reasonable limit
+                limit = 100
+            
+            logger.info(f"Search request: query='{query}', offset={offset}, limit={limit}")
+            
             # Step 0: Query expansion (if enabled)
             search_queries = [query]
             if enable_query_expansion:

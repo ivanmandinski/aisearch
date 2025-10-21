@@ -147,3 +147,4 @@ The pagination duplication issue has been resolved. The system now uses a clean,
 
 This fix ensures no duplicate content appears when using pagination functionality.
 
+

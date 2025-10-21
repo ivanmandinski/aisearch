@@ -28,5 +28,11 @@ numpy>=1.26.0
 # HTTP Client
 httpx==0.25.2
 
+# Additional dependencies for enhanced features
+beautifulsoup4>=4.12.0
+python-multipart>=0.0.6
+psutil>=5.9.0
+bleach>=6.0.0
+
 # Environment and Logging
 python-dotenv==1.0.0

@@ -46,3 +46,4 @@ function escapeHtml(text) {
 
 ## Summary
 Version 2.10.1 is a critical bug fix that resolves JavaScript errors and ensures proper security handling of HTML content in search results. This patch release maintains all functionality from 2.10.0 while fixing the missing function error.
+

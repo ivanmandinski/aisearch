@@ -84,9 +84,7 @@ class HybridRetriever(BaseRetriever):
                         'author': result['author'],
                         'categories': result['categories'],
                         'tags': result['tags'],
-                        'excerpt': result['excerpt'],
-                        'featured_image': result.get('featured_image', ''),
-                        'featured_media': result.get('featured_media', 0)
+                        'excerpt': result['excerpt']
                     }
                 )
                 
@@ -218,9 +216,7 @@ class LlamaIndexOrchestrator:
                         'categories': doc['categories'],
                         'tags': doc['tags'],
                         'excerpt': doc['excerpt'],
-                        'word_count': doc['word_count'],
-                        'featured_image': doc.get('featured_image', ''),
-                        'featured_media': doc.get('featured_media', 0)
+                        'word_count': doc['word_count']
                     }
                 )
                 llama_docs.append(llama_doc)

@@ -183,3 +183,4 @@ If you ever want MCP integration in the future:
 
 But for now, your system works perfectly without it!
 
+

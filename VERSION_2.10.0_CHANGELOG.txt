@@ -161,3 +161,4 @@ Key improvements include:
 - ✅ Improved performance and loading speed
 
 This update significantly enhances the search experience while maintaining backward compatibility and improving overall plugin performance.
+
