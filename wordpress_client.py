@@ -209,6 +209,10 @@ class WordPressContentFetcher:
             if not featured_image:
                 processed["featured_image"] = self._extract_image_from_content(raw_content)
             
+            # Ensure we have a featured_image field even if empty
+            if not processed.get("featured_image"):
+                processed["featured_image"] = ""
+            
             # Extract categories and tags safely
             try:
                 if "_embedded" in item and "wp:term" in item["_embedded"]:
