@@ -319,8 +319,10 @@ class SimpleHybridSearch:
             if enable_ai_reranking and self.llm_client:
                 logger.info(f"🤖 Applying AI reranking to {len(candidates)} results...")
                 
-                # Rerank top 20 candidates with AI (or fewer if we have less)
-                top_candidates = candidates[:min(20, len(candidates))]
+                # For pagination to work with AI reranking, we need to rerank enough candidates
+                # to cover the requested offset + limit
+                rerank_limit = max(20, offset + limit + 10)  # Rerank enough to cover pagination
+                top_candidates = candidates[:min(rerank_limit, len(candidates))]
                 
                 try:
                     reranking_result = self.llm_client.rerank_results(
@@ -344,7 +346,14 @@ class SimpleHybridSearch:
                     
                 except Exception as e:
                     logger.error(f"AI reranking failed: {e}, falling back to TF-IDF results")
-                    # Fall through to return TF-IDF results
+                    # Fall through to return TF-IDF results with proper pagination
+                    paginated_results = candidates[offset:offset + limit]
+                    logger.info(f"🔍 TF-IDF FALLBACK DEBUG: total_candidates={len(candidates)}, offset={offset}, limit={limit}, paginated_count={len(paginated_results)}")
+                    return paginated_results, {
+                        'ai_reranking_used': False,
+                        'reason': f'AI reranking failed: {str(e)}',
+                        'total_results': len(candidates)
+                    }
             else:
                 if not enable_ai_reranking:
                     logger.info("AI reranking disabled, using TF-IDF results")
