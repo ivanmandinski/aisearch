@@ -5,7 +5,7 @@ import re
 import html
 import logging
 from typing import Any, Dict, List, Optional, Union
-from pydantic import BaseModel, Field, validator, root_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 import bleach
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,8 @@ class SearchRequestValidator(BaseModel):
     ai_weight: float = Field(default=0.7, ge=0.0, le=1.0, description="Weight for AI score")
     ai_reranking_instructions: str = Field(default="", max_length=1000, description="Custom AI reranking instructions")
     
-    @validator('query')
+    @field_validator('query')
+    @classmethod
     def validate_query(cls, v):
         """Validate and sanitize search query."""
         if not v or not v.strip():
@@ -68,7 +69,8 @@ class SearchRequestValidator(BaseModel):
         
         return sanitized
     
-    @validator('ai_instructions', 'ai_reranking_instructions')
+    @field_validator('ai_instructions', 'ai_reranking_instructions')
+    @classmethod
     def validate_instructions(cls, v):
         """Validate AI instructions for security."""
         if not v:
@@ -92,7 +94,8 @@ class SearchRequestValidator(BaseModel):
         
         return cleaned
     
-    @validator('filters')
+    @field_validator('filters')
+    @classmethod
     def validate_filters(cls, v):
         """Validate search filters."""
         if not v:
@@ -125,19 +128,19 @@ class SearchRequestValidator(BaseModel):
         
         return sanitized_filters
     
-    @root_validator
-    def validate_request_size(cls, values):
+    @model_validator(mode='after')
+    def validate_request_size(self):
         """Validate overall request size and complexity."""
-        query = values.get('query', '')
-        ai_instructions = values.get('ai_instructions', '')
-        ai_reranking_instructions = values.get('ai_reranking_instructions', '')
+        query = self.query or ''
+        ai_instructions = self.ai_instructions or ''
+        ai_reranking_instructions = self.ai_reranking_instructions or ''
         
         total_length = len(query) + len(ai_instructions) + len(ai_reranking_instructions)
         
         if total_length > 2000:
             raise ValueError('Request too large')
         
-        return values
+        return self
 
 
 class IndexRequestValidator(BaseModel):
@@ -146,7 +149,8 @@ class IndexRequestValidator(BaseModel):
     force_reindex: bool = Field(default=False, description="Force reindexing")
     post_types: Optional[List[str]] = Field(default=None, description="Post types to index")
     
-    @validator('post_types')
+    @field_validator('post_types')
+    @classmethod
     def validate_post_types(cls, v):
         """Validate post types."""
         if not v:
@@ -174,7 +178,8 @@ class DocumentValidator(BaseModel):
     url: str = Field(..., min_length=1, max_length=500, description="Document URL")
     content: str = Field(..., min_length=1, max_length=50000, description="Document content")
     
-    @validator('id', 'slug', 'type')
+    @field_validator('id', 'slug', 'type')
+    @classmethod
     def validate_identifiers(cls, v):
         """Validate document identifiers."""
         # Only allow alphanumeric, hyphens, and underscores
@@ -182,7 +187,8 @@ class DocumentValidator(BaseModel):
             raise ValueError('Invalid identifier format')
         return v
     
-    @validator('url')
+    @field_validator('url')
+    @classmethod
     def validate_url(cls, v):
         """Validate URL format."""
         url_pattern = r'^https?://[^\s/$.?#].[^\s]*$'
@@ -190,7 +196,8 @@ class DocumentValidator(BaseModel):
             raise ValueError('Invalid URL format')
         return v
     
-    @validator('title', 'content')
+    @field_validator('title', 'content')
+    @classmethod
     def validate_text_content(cls, v):
         """Validate and sanitize text content."""
         # Remove potentially dangerous HTML
@@ -219,7 +226,7 @@ def validate_search_request(data: Dict[str, Any]) -> Dict[str, Any]:
     """Validate and sanitize search request data."""
     try:
         validator = SearchRequestValidator(**data)
-        return validator.dict()
+        return validator.model_dump()
     except Exception as e:
         logger.error(f"Search request validation failed: {e}")
         raise ValueError(f"Invalid request: {str(e)}")
@@ -229,7 +236,7 @@ def validate_index_request(data: Dict[str, Any]) -> Dict[str, Any]:
     """Validate and sanitize index request data."""
     try:
         validator = IndexRequestValidator(**data)
-        return validator.dict()
+        return validator.model_dump()
     except Exception as e:
         logger.error(f"Index request validation failed: {e}")
         raise ValueError(f"Invalid request: {str(e)}")
@@ -239,7 +246,7 @@ def validate_document(data: Dict[str, Any]) -> Dict[str, Any]:
     """Validate and sanitize document data."""
     try:
         validator = DocumentValidator(**data)
-        return validator.dict()
+        return validator.model_dump()
     except Exception as e:
         logger.error(f"Document validation failed: {e}")
         raise ValueError(f"Invalid document: {str(e)}")

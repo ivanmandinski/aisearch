@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     
     # Cerebras LLM Configuration
     cerebras_api_base: str = "https://api.cerebras.ai/v1"
-    cerebras_api_key: str
+    cerebras_api_key: str = ""
     cerebras_model: str = "cerebras-llama-2-7b-chat"
     
     # OpenAI Configuration (for embeddings)
@@ -27,10 +27,10 @@ class Settings(BaseSettings):
     sparse_model: str = "tfidf"
     
     # WordPress Configuration
-    wordpress_url: str
-    wordpress_username: str
-    wordpress_password: str
-    wordpress_api_url: str
+    wordpress_url: str = ""
+    wordpress_username: str = ""
+    wordpress_password: str = ""
+    wordpress_api_url: str = ""
     
     # API Configuration
     api_host: str = "0.0.0.0"

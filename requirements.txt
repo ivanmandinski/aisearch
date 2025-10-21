@@ -34,5 +34,9 @@ python-multipart>=0.0.6
 psutil>=5.9.0
 bleach>=6.0.0
 
+# Optional dependencies (can be installed as needed)
+# qdrant-client>=1.15.1  # For vector database
+# sentence-transformers>=2.2.2  # For semantic embeddings
+
 # Environment and Logging
 python-dotenv==1.0.0

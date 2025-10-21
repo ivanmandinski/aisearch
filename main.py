@@ -247,7 +247,7 @@ async def search(request: SearchRequest):
     try:
         # Validate and sanitize request data
         try:
-            validated_data = validate_search_request(request.dict())
+            validated_data = validate_search_request(request.model_dump())
         except ValueError as e:
             logger.warning(f"Search request validation failed: {e}")
             return JSONResponse(
