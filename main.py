@@ -81,6 +81,8 @@ class SearchRequest(BaseModel):
     enable_ai_reranking: bool = Field(default=True, description="Whether to use AI reranking")
     ai_weight: float = Field(default=0.7, ge=0.0, le=1.0, description="Weight for AI score (0-1)")
     ai_reranking_instructions: str = Field(default="", description="Custom instructions for AI reranking")
+    # Strict AI Answer Mode
+    strict_ai_answer_mode: bool = Field(default=True, description="Whether to use strict mode for AI answers (only use search results)")
 
 
 class SearchResponse(BaseModel):
@@ -135,10 +137,12 @@ async def startup_event():
             try:
                 logger.info("Initializing LLM client...")
                 llm_client = CerebrasLLM()
+                # Set strict mode from settings
+                llm_client.strict_mode = settings.strict_ai_answer_mode
                 if not llm_client.test_connection():
                     logger.warning("Cerebras LLM connection test failed - continuing anyway")
                 else:
-                    logger.info("LLM client initialized successfully")
+                    logger.info(f"LLM client initialized successfully (strict_mode: {llm_client.strict_mode})")
             except Exception as e:
                 logger.error(f"Failed to initialize LLM client: {e}", exc_info=True)
                 # Don't raise - allow app to start without LLM

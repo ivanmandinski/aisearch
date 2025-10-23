@@ -21,6 +21,7 @@ class CerebrasLLM:
             base_url=settings.cerebras_api_base
         )
         self.model = settings.cerebras_model
+        self.strict_mode = getattr(settings, 'strict_ai_answer_mode', True)  # Only use search results for answers
     
     def rewrite_query(self, original_query: str, context: str = "") -> str:
         """Rewrite and expand the search query for better retrieval."""
@@ -133,22 +134,38 @@ Content: {result['excerpt'] or result.get('content', '')[:500]}...
             if custom_instr:
                 # Use ONLY custom instructions when provided
                 base_instructions = f"""
-Based on the following search results, answer the user's question.
+Based ONLY on the following search results from the indexed content, answer the user's question.
+
+CRITICAL CONSTRAINTS:
+- You MUST ONLY use information from the provided search results
+- Do NOT use any external knowledge or general information
+- If the search results don't contain enough information, explicitly state this limitation
+- Always cite the specific source number when referencing information
+- This is STRICT MODE: You are forbidden from adding any information not present in the search results
 
 IMPORTANT: Follow these custom instructions EXACTLY:
 {custom_instr}
 """
             else:
                 # Use default instructions only when no custom instructions are provided
-                base_instructions = """
-Based on the following search results, provide a comprehensive answer to the user's question.
+                strict_warning = "STRICT MODE ENABLED: " if self.strict_mode else ""
+                base_instructions = f"""
+Based ONLY on the following search results from the indexed content, provide a comprehensive answer to the user's question.
+
+{strict_warning}CRITICAL CONSTRAINTS:
+- You MUST ONLY use information from the provided search results
+- Do NOT use any external knowledge or general information
+- If the search results don't contain enough information, explicitly state this limitation
+- Always cite the specific source number when referencing information
+- You are forbidden from adding any information not present in the search results
 
 Instructions:
-1. Provide a clear, well-structured answer based on the search results
-2. Cite specific sources when making claims
-3. If the search results don't fully answer the question, acknowledge this
+1. Provide a clear, well-structured answer based ONLY on the search results
+2. Cite specific sources (Source 1, Source 2, etc.) when making claims
+3. If the search results don't fully answer the question, acknowledge this limitation
 4. Use a helpful and informative tone
 5. Keep the answer concise but comprehensive (2-3 paragraphs max)
+6. Never add information not present in the search results
 """
             
             prompt = f"""{base_instructions}
@@ -161,10 +178,14 @@ Search Results:
 Answer:
 """
             
+            system_message = "You are a helpful research assistant that provides accurate, well-sourced answers based ONLY on the provided search results. You must never use external knowledge or information not present in the search results."
+            if self.strict_mode:
+                system_message += " STRICT MODE: You are absolutely forbidden from adding any information not explicitly present in the search results."
+            
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "You are a helpful research assistant that provides accurate, well-sourced answers."},
+                    {"role": "system", "content": system_message},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.2,
@@ -172,11 +193,49 @@ Answer:
             )
             
             answer = response.choices[0].message.content.strip()
+            
+            # Validate that the answer is based on search results
+            answer = self._validate_answer_context(answer, search_results)
+            
+            logger.info(f"Generated answer for query: {query[:50]}...")
             return answer
             
         except Exception as e:
             logger.error(f"Error generating answer: {e}")
             return "I encountered an error while generating an answer. Please try again."
+    
+    def _validate_answer_context(self, answer: str, search_results: List[Dict[str, Any]]) -> str:
+        """Validate that the answer is based on search results and add disclaimer if needed."""
+        try:
+            # Extract key terms from search results
+            search_content = []
+            for result in search_results[:3]:  # Check top 3 results
+                content = (result.get('excerpt', '') or result.get('content', '') or result.get('title', '')).lower()
+                search_content.append(content)
+            
+            combined_content = ' '.join(search_content)
+            
+            # Check if answer contains source references
+            has_source_refs = any(f"Source {i}" in answer for i in range(1, 6))
+            
+            # If no source references and answer seems generic, add disclaimer
+            if not has_source_refs and len(answer) > 100:
+                # Check if answer might be using external knowledge
+                generic_phrases = [
+                    "in general", "typically", "usually", "commonly", "generally",
+                    "it is known that", "research shows", "studies indicate",
+                    "experts say", "according to experts", "it is widely known"
+                ]
+                
+                if any(phrase in answer.lower() for phrase in generic_phrases):
+                    disclaimer = "\n\n*Note: This answer is based on the available search results. For more specific information, please review the individual sources listed below.*"
+                    answer += disclaimer
+            
+            return answer
+            
+        except Exception as e:
+            logger.warning(f"Answer validation failed: {e}")
+            return answer
     
     def summarize_content(self, content: str, max_length: int = 200) -> str:
         """Summarize content to a specified length."""

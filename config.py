@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     
     # AI Instructions Configuration
     ai_instructions: str = ""
+    strict_ai_answer_mode: bool = True  # Only use search results for AI answers
     
     class Config:
         env_file = ".env"

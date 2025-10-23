@@ -426,6 +426,36 @@ class WordPressContentFetcher:
             if excerpt_raw:
                 cleaned["excerpt"] = self.clean_html_content(excerpt_raw)
             
+            # Handle featured image
+            featured_media_id = post.get("featured_media", 0)
+            if featured_media_id and featured_media_id > 0:
+                cleaned["featured_media"] = featured_media_id
+                
+                # Try to get featured image URL from embedded data
+                embedded = post.get("_embedded", {})
+                featured_media = embedded.get("wp:featuredmedia", [])
+                if featured_media and len(featured_media) > 0:
+                    media_item = featured_media[0]
+                    if isinstance(media_item, dict):
+                        source_url = media_item.get("source_url", "")
+                        if source_url:
+                            cleaned["featured_image"] = source_url
+                            cleaned["featured_image_url"] = source_url
+                            cleaned["thumbnail"] = source_url
+                
+                # If no embedded data, construct URL
+                if not cleaned.get("featured_image"):
+                    base_url = self.base_url.replace("/wp-json/wp/v2", "")
+                    cleaned["featured_image"] = f"{base_url}/wp-content/uploads/{featured_media_id}.jpg"
+                    cleaned["featured_image_url"] = cleaned["featured_image"]
+                    cleaned["thumbnail"] = cleaned["featured_image"]
+            else:
+                # Ensure featured_image field is always present
+                cleaned["featured_image"] = ""
+                cleaned["featured_image_url"] = ""
+                cleaned["thumbnail"] = ""
+                cleaned["featured_media"] = 0
+            
             # Skip if content is too short or empty
             if len(cleaned["content"]) < 50:
                 return None
