@@ -257,79 +257,38 @@ class WordPressContentFetcher:
     def _extract_featured_image(self, item: Dict[str, Any]) -> str:
         """Extract featured image URL from WordPress item using multiple methods."""
         try:
-            logger.info(f"Extracting featured image for item {item.get('id', 'unknown')}")
-            logger.info(f"Item keys: {list(item.keys())}")
-            
-            # Method 1: Check for featured_media field
+            # Method 1: Check for featured_media field with embedded data
             featured_media_id = item.get("featured_media", 0)
-            logger.info(f"Featured media ID: {featured_media_id}")
             
             if featured_media_id and featured_media_id > 0:
                 # Look for embedded media
-                if "_embedded" in item:
-                    logger.info(f"Embedded keys: {list(item['_embedded'].keys())}")
-                    
-                    if "wp:featuredmedia" in item["_embedded"]:
-                        logger.info(f"Found wp:featuredmedia with {len(item['_embedded']['wp:featuredmedia'])} items")
-                        
-                        for media in item["_embedded"]["wp:featuredmedia"]:
-                            if str(media.get("id", "")) == str(featured_media_id):
-                                logger.info(f"Found matching media item: {media.get('id')}")
+                if "_embedded" in item and "wp:featuredmedia" in item["_embedded"]:
+                    for media in item["_embedded"]["wp:featuredmedia"]:
+                        if str(media.get("id", "")) == str(featured_media_id):
+                            # Get the source URL from media details
+                            media_details = media.get("media_details", {})
+                            if media_details:
+                                sizes = media_details.get("sizes", {})
                                 
-                                # Get the source URL
-                                media_details = media.get("media_details", {})
-                                if media_details:
-                                    sizes = media_details.get("sizes", {})
-                                    logger.info(f"Available sizes: {list(sizes.keys())}")
-                                    
-                                    # Try different sizes in order of preference
-                                    for size_name in ["medium_large", "medium", "large", "full"]:
-                                        if size_name in sizes:
-                                            source_url = sizes[size_name].get("source_url", "")
-                                            if source_url:
-                                                logger.info(f"Found image URL ({size_name}): {source_url}")
-                                                return source_url
-                                    
-                                    # Fallback to any available size
-                                    for size_name, size_data in sizes.items():
-                                        source_url = size_data.get("source_url", "")
+                                # Try different sizes in order of preference
+                                for size_name in ["medium_large", "medium", "large", "full"]:
+                                    if size_name in sizes:
+                                        source_url = sizes[size_name].get("source_url", "")
                                         if source_url:
-                                            logger.info(f"Found fallback image URL ({size_name}): {source_url}")
                                             return source_url
-                                else:
-                                    logger.warning(f"No media_details found for media {media.get('id')}")
-                    else:
-                        logger.warning("No wp:featuredmedia found in embedded data")
-                else:
-                    logger.warning("No _embedded data found")
-            
-            # Method 2: Check for direct image fields in the item
-            direct_image_fields = ['featured_image', 'thumbnail', 'image', 'featured_image_url', 'post_thumbnail']
-            for field in direct_image_fields:
-                if field in item and item[field]:
-                    image_url = str(item[field]).strip()
-                    if image_url and image_url != '0' and image_url != 'false':
-                        logger.info(f"Found direct image in field '{field}': {image_url}")
-                        return image_url
-            
-            # Method 3: Check for image in content
-            content = self._safe_get_text(item.get("content", {}), "rendered", "")
-            if content:
-                logger.info("Checking content for images as fallback")
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(content, 'html.parser')
-                img_tags = soup.find_all('img')
-                if img_tags:
-                    # Return the first image found
-                    first_img = img_tags[0]
-                    src = first_img.get('src', '')
-                    if src and src.startswith('http'):
-                        logger.info(f"Found fallback image in content: {src}")
-                        return src
-            
-            # Method 4: Try to construct image URL from WordPress site
-            if featured_media_id and featured_media_id > 0:
-                # Try to construct the image URL directly
+                                
+                                # Fallback to any available size
+                                for size_name, size_data in sizes.items():
+                                    source_url = size_data.get("source_url", "")
+                                    if source_url:
+                                        return source_url
+                            
+                            # Direct source_url fallback
+                            source_url = media.get("source_url", "")
+                            if source_url:
+                                return source_url
+                
+                # Method 2: Try to construct image URL from WordPress site
                 base_url = self.base_url.replace('/wp-json/wp/v2', '')
                 potential_urls = [
                     f"{base_url}/wp-content/uploads/{featured_media_id}.jpg",
@@ -338,17 +297,33 @@ class WordPressContentFetcher:
                     f"{base_url}/wp-content/uploads/{featured_media_id}.webp"
                 ]
                 
-                # Note: We can't test these URLs here, but we can return the first one
-                # The frontend will handle the onerror case
-                if potential_urls:
-                    logger.info(f"Trying constructed URL: {potential_urls[0]}")
-                    return potential_urls[0]
+                # Return the first potential URL - frontend will handle onerror
+                return potential_urls[0]
             
-            logger.warning(f"No featured image found for item {item.get('id', 'unknown')}")
+            # Method 3: Check for direct image fields in the item
+            direct_image_fields = ['featured_image', 'thumbnail', 'image', 'featured_image_url', 'post_thumbnail']
+            for field in direct_image_fields:
+                if field in item and item[field]:
+                    image_url = str(item[field]).strip()
+                    if image_url and image_url != '0' and image_url != 'false':
+                        return image_url
+            
+            # Method 4: Check for image in content
+            content = self._safe_get_text(item.get("content", {}), "rendered", "")
+            if content:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(content, 'html.parser')
+                img_tags = soup.find_all('img')
+                if img_tags:
+                    # Return the first image found
+                    first_img = img_tags[0]
+                    src = first_img.get('src', '')
+                    if src and src.startswith('http'):
+                        return src
+            
             return ""
             
         except Exception as e:
-            logger.error(f"Error extracting featured image: {e}")
             return ""
     
     def _extract_image_from_content(self, content: str) -> str:
@@ -426,35 +401,21 @@ class WordPressContentFetcher:
             if excerpt_raw:
                 cleaned["excerpt"] = self.clean_html_content(excerpt_raw)
             
-            # Handle featured image
+            # Handle featured image with improved extraction
+            featured_image_url = self._extract_featured_image(post)
             featured_media_id = post.get("featured_media", 0)
-            if featured_media_id and featured_media_id > 0:
+            
+            if featured_image_url:
+                cleaned["featured_image"] = featured_image_url
+                cleaned["featured_image_url"] = featured_image_url
+                cleaned["thumbnail"] = featured_image_url
                 cleaned["featured_media"] = featured_media_id
-                
-                # Try to get featured image URL from embedded data
-                embedded = post.get("_embedded", {})
-                featured_media = embedded.get("wp:featuredmedia", [])
-                if featured_media and len(featured_media) > 0:
-                    media_item = featured_media[0]
-                    if isinstance(media_item, dict):
-                        source_url = media_item.get("source_url", "")
-                        if source_url:
-                            cleaned["featured_image"] = source_url
-                            cleaned["featured_image_url"] = source_url
-                            cleaned["thumbnail"] = source_url
-                
-                # If no embedded data, construct URL
-                if not cleaned.get("featured_image"):
-                    base_url = self.base_url.replace("/wp-json/wp/v2", "")
-                    cleaned["featured_image"] = f"{base_url}/wp-content/uploads/{featured_media_id}.jpg"
-                    cleaned["featured_image_url"] = cleaned["featured_image"]
-                    cleaned["thumbnail"] = cleaned["featured_image"]
             else:
                 # Ensure featured_image field is always present
                 cleaned["featured_image"] = ""
                 cleaned["featured_image_url"] = ""
                 cleaned["thumbnail"] = ""
-                cleaned["featured_media"] = 0
+                cleaned["featured_media"] = featured_media_id
             
             # Skip if content is too short or empty
             if len(cleaned["content"]) < 50:
