@@ -6,6 +6,7 @@ Settings are validated using Pydantic for type safety.
 """
 import os
 from typing import Optional, Literal
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -57,7 +58,7 @@ class Settings(BaseSettings):
     embed_model: str = "text-embedding-ada-002"
     """Embedding model name"""
     
-    sparse_model: Literal["tfidf", "bm25"] = "tfidf"
+    sparse_model: str = "tfidf"
     """Sparse vector model (tfidf or bm25)"""
     
     # ========================================================================
@@ -123,6 +124,36 @@ class Settings(BaseSettings):
     
     strict_ai_answer_mode: bool = True
     """If True, AI answers only use search results (no external knowledge)"""
+    
+    @field_validator('sparse_model')
+    @classmethod
+    def normalize_sparse_model(cls, v: str) -> str:
+        """
+        Normalize sparse_model value to handle various input formats.
+        
+        Handles cases like:
+        - "Qdrant/bm25" -> "bm25"
+        - "BM25" -> "bm25"
+        - "TF-IDF" -> "tfidf"
+        """
+        if not v:
+            return "tfidf"  # Default
+        
+        # Extract model name if prefixed (e.g., "Qdrant/bm25" -> "bm25")
+        if '/' in v:
+            v = v.split('/')[-1]
+        
+        # Normalize to lowercase and remove hyphens
+        v = v.lower().replace('-', '').replace('_', '')
+        
+        # Map common variations
+        if v in ['bm25', 'bm-25']:
+            return "bm25"
+        elif v in ['tfidf', 'tf-idf', 'tf_idf']:
+            return "tfidf"
+        
+        # Default to tfidf if unrecognized
+        return "tfidf"
     
     class Config:
         """Pydantic configuration."""
