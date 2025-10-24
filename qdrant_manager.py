@@ -1,30 +1,48 @@
 """
 Qdrant vector database configuration and management.
+
+This module provides a high-level interface for interacting with Qdrant,
+including collection management, document indexing, and hybrid search operations.
 """
 import logging
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct, Filter, FieldCondition, 
-    MatchValue, SearchRequest
+    MatchValue, SearchRequest, ScoredPoint
 )
 from qdrant_client.http import models
 import numpy as np
+from numpy.typing import NDArray
 from config import settings
 
 logger = logging.getLogger(__name__)
 
 
 class QdrantManager:
-    """Manages Qdrant vector database operations for hybrid search."""
+    """
+    Manages Qdrant vector database operations for hybrid search.
     
-    def __init__(self):
-        self.client = QdrantClient(
+    This class provides methods for:
+    - Creating and managing collections
+    - Indexing documents with dense and sparse vectors
+    - Performing hybrid search queries
+    - Managing document lifecycle
+    
+    Attributes:
+        client: QdrantClient instance for database operations
+        collection_name: Name of the collection being managed
+        embedding_dimension: Dimension of dense vectors
+    """
+    
+    def __init__(self) -> None:
+        """Initialize Qdrant client and configuration."""
+        self.client: QdrantClient = QdrantClient(
             url=settings.qdrant_url,
             api_key=settings.qdrant_api_key
         )
-        self.collection_name = settings.qdrant_collection_name
-        self.embedding_dimension = settings.embedding_dimension
+        self.collection_name: str = settings.qdrant_collection_name
+        self.embedding_dimension: int = settings.embedding_dimension
     
     def create_collection(self) -> bool:
         """Create the collection if it doesn't exist."""

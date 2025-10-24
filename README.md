@@ -1,347 +1,529 @@
-# Hybrid Search System for WordPress
+# Hybrid Search - AI-Powered Semantic Search for WordPress
 
-A comprehensive hybrid search system that combines dense and sparse retrieval to replace WordPress's native search functionality. This system uses state-of-the-art vector search, LLM-powered query processing, and seamless WordPress integration.
+<div align="center">
+
+![Version](https://img.shields.io/badge/version-2.15.1-blue)
+![Python](https://img.shields.io/badge/python-3.9+-green)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-orange)
+![License](https://img.shields.io/badge/license-GPL%20v2-blue)
+
+**Enterprise-grade AI-powered search combining traditional keyword matching with modern semantic understanding**
+
+[Features](#features) • [Quick Start](#quick-start) • [Documentation](#documentation) • [API Reference](#api-reference) • [Contributing](#contributing)
+
+</div>
+
+---
+
+## 🌟 Features
+
+### Core Capabilities
+
+- **🔍 Hybrid Search**: Combines TF-IDF keyword search with semantic vector search
+- **🤖 AI Reranking**: Uses Cerebras LLM to intelligently rerank results based on relevance
+- **💬 AI Answer Generation**: Generates comprehensive answers from search results
+- **🔄 Query Expansion**: Automatically expands queries with synonyms and related terms
+- **⚡ Real-time Indexing**: Supports instant document indexing and updates
+- **🎯 Advanced Filtering**: Filter by post type, author, categories, and tags
+- **📊 Analytics**: Built-in search analytics and click-through rate tracking
+- **🚀 Performance**: Smart caching with variable TTL and gzip compression
+
+### Technical Highlights
+
+- **FastAPI Backend**: High-performance async API with automatic documentation
+- **Qdrant Vector DB**: Scalable vector similarity search
+- **Sentence Transformers**: Semantic embeddings for intelligent search
+- **WordPress Integration**: Seamless WordPress plugin with real-time sync
+- **Docker Support**: Containerized deployment ready for production
+- **Comprehensive Error Handling**: Standardized error responses with detailed messages
+- **Type Safety**: Full Python type hints for better code quality
+
+---
+
+## 📋 Table of Contents
+
+- [Architecture](#architecture)
+- [Requirements](#requirements)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [API Documentation](#api-documentation)
+- [WordPress Plugin](#wordpress-plugin)
+- [Development](#development)
+- [Deployment](#deployment)
+- [Testing](#testing)
+- [Performance](#performance)
+- [Security](#security)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
 
 ## 🏗️ Architecture
 
-- **Qdrant**: Vector database for hybrid (dense + sparse) retrieval
-- **LlamaIndex**: Orchestration layer for indexing and querying
-- **Cerebras**: OpenAI-compatible LLM for query rewriting and answering
-- **FastAPI**: REST API service with comprehensive endpoints
-- **Railway**: Cloud deployment platform
-- **WordPress Plugin**: Frontend integration with custom UI
+```
+┌─────────────────┐
+│  WordPress Site │
+│   (Frontend)    │
+└────────┬────────┘
+         │ REST API
+         ▼
+┌─────────────────┐
+│  WordPress      │
+│  Plugin         │────┐
+└────────┬────────┘    │
+         │ AJAX        │ Auto-Index
+         ▼             │
+┌─────────────────┐    │
+│  FastAPI        │◄───┘
+│  Backend        │
+└────┬────────┬───┘
+     │        │
+     │        └──────────┐
+     ▼                   ▼
+┌──────────┐      ┌───────────┐
+│ Qdrant   │      │ Cerebras  │
+│ Vector DB│      │    LLM    │
+└──────────┘      └───────────┘
+```
 
-## ✨ Features
+### Components
 
-- **Hybrid Search**: Combines semantic (dense) and keyword (sparse) retrieval for optimal results
-- **LLM-Powered Query Processing**: Query rewriting, expansion, and answer generation
-- **Real-time Indexing**: Automatic indexing of WordPress posts and pages
-- **Advanced Filtering**: Search by categories, tags, authors, and content types
-- **Relevance Scoring**: Intelligent scoring with visual indicators
-- **AI-Generated Answers**: Contextual answers based on search results
-- **Responsive Design**: Mobile-friendly search interface
-- **RESTful API**: Comprehensive API for custom integrations
+1. **FastAPI Backend** (`main.py`): Handles search requests, indexing, and LLM operations
+2. **WordPress Plugin** (`wordpress-plugin/`): Provides search UI and admin interface
+3. **Qdrant Manager** (`qdrant_manager.py`): Manages vector database operations
+4. **Cerebras LLM** (`cerebras_llm.py`): AI-powered query processing and answer generation
+5. **Search Engine** (`simple_hybrid_search.py`): Core hybrid search logic
+
+---
+
+## 💻 Requirements
+
+### Backend
+
+- **Python**: 3.9 or higher
+- **Dependencies**: See `requirements.txt`
+  - FastAPI 0.104.1+
+  - Qdrant Client 1.15.1+
+  - OpenAI SDK 1.3.7+
+  - scikit-learn 1.4.0+
+  - httpx 0.25.2+
+
+### WordPress
+
+- **WordPress**: 5.0 or higher
+- **PHP**: 7.4 or higher
+- **MySQL**: 5.7+ or MariaDB 10.2+
+
+### External Services
+
+- **Qdrant**: Vector database (self-hosted or cloud)
+- **Cerebras**: LLM API for AI features
+
+---
 
 ## 🚀 Quick Start
 
-### Prerequisites
+### 1. Clone the Repository
 
-- Python 3.11+
-- WordPress site with REST API enabled
-- Cerebras API key
-- Railway account (for deployment)
+```bash
+git clone https://github.com/your-org/hybrid-search.git
+cd hybrid-search
+```
 
-### Local Development
+### 2. Set Up Environment
 
-1. **Clone and Setup**
-   ```bash
-   git clone <repository-url>
-   cd search
-   pip install -r requirements.txt
-   ```
+```bash
+# Copy environment template
+cp env.example .env
 
-2. **Configure Environment**
-   ```bash
-   cp env.example .env
-   # Edit .env with your configuration
-   ```
+# Edit .env with your configuration
+nano .env
+```
 
-3. **Run with Docker**
-   ```bash
-   docker-compose up -d
-   ```
+### 3. Install Python Dependencies
 
-4. **Or Run Locally**
-   ```bash
-   uvicorn main:app --reload
-   ```
+```bash
+pip install -r requirements.txt
+```
 
-### WordPress Plugin Installation
+### 4. Start Qdrant (Docker)
 
-1. **Upload Plugin**
-   - Copy the `wordpress-plugin` folder to your WordPress `wp-content/plugins/` directory
-   - Rename it to `hybrid-search`
+```bash
+docker run -p 6333:6333 qdrant/qdrant
+```
 
-2. **Activate Plugin**
-   - Go to WordPress Admin → Plugins
-   - Activate "Hybrid Search"
+### 5. Run the API
 
-3. **Configure Settings**
-   - Go to Settings → Hybrid Search
-   - Enter your API URL and configuration
-   - Test the connection
+```bash
+python main.py
+```
 
-## 🔧 Configuration
+The API will be available at `http://localhost:8000`
+
+### 6. Install WordPress Plugin
+
+1. Copy `wordpress-plugin/` to `wp-content/plugins/hybrid-search/`
+2. Activate the plugin in WordPress admin
+3. Configure API URL in plugin settings
+
+### 7. Index Your Content
+
+```bash
+curl -X POST http://localhost:8000/index
+```
+
+### 8. Test Search
+
+```bash
+curl -X POST http://localhost:8000/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "test search", "limit": 10}'
+```
+
+---
+
+## ⚙️ Configuration
 
 ### Environment Variables
+
+Create a `.env` file in the project root:
 
 ```bash
 # Qdrant Configuration
 QDRANT_URL=http://localhost:6333
-QDRANT_API_KEY=your_qdrant_api_key_here
+QDRANT_API_KEY=your-qdrant-api-key
 QDRANT_COLLECTION_NAME=wordpress_content
 
 # Cerebras LLM Configuration
+CEREBRAS_API_KEY=your-cerebras-api-key
 CEREBRAS_API_BASE=https://api.cerebras.ai/v1
-CEREBRAS_API_KEY=your_cerebras_api_key_here
 CEREBRAS_MODEL=cerebras-llama-2-7b-chat
 
+# OpenAI Configuration (for embeddings)
+OPENAI_API_KEY=your-openai-api-key
+
 # WordPress Configuration
-WORDPRESS_URL=https://your-wordpress-site.com
+WORDPRESS_URL=https://your-site.com
 WORDPRESS_USERNAME=your_wp_username
 WORDPRESS_PASSWORD=your_wp_app_password
-WORDPRESS_API_URL=https://your-wordpress-site.com/wp-json/wp/v2
+WORDPRESS_API_URL=https://your-site.com/wp-json/wp/v2
 
 # API Configuration
 API_HOST=0.0.0.0
 API_PORT=8000
-MAX_SEARCH_RESULTS=10
+API_TITLE=Hybrid Search API
+API_VERSION=2.15.1
+
+# Search Configuration
+MAX_SEARCH_RESULTS=100
 SEARCH_TIMEOUT=30
-EMBEDDING_DIMENSION=1536
+EMBEDDING_DIMENSION=384
+CHUNK_SIZE=1000
+
+# AI Configuration
+AI_INSTRUCTIONS=Provide comprehensive and accurate answers
+STRICT_AI_ANSWER_MODE=true
 ```
 
-### WordPress Setup
+### WordPress Plugin Settings
 
-1. **Enable REST API**
-   - Ensure WordPress REST API is enabled
-   - Create an Application Password for API access
+Navigate to **WordPress Admin → Settings → Hybrid Search**:
 
-2. **Plugin Configuration**
-   - Set API URL to your deployed service
-   - Configure search preferences
-   - Test the connection
+1. **API URL**: Your FastAPI backend URL
+2. **Max Results**: Number of results to display (default: 10)
+3. **Enable AI Answers**: Toggle AI-generated answers
+4. **AI Instructions**: Custom instructions for AI
+5. **Auto-Index**: Enable automatic indexing on post publish/update
 
-## 🌐 API Endpoints
+---
 
-### Search
-```http
+## 📚 API Documentation
+
+Full API documentation is available at:
+- **Interactive Docs**: `http://localhost:8000/docs` (Swagger UI)
+- **ReDoc**: `http://localhost:8000/redoc`
+- **Detailed Guide**: See [API_DOCUMENTATION.md](API_DOCUMENTATION.md)
+
+### Quick API Examples
+
+**Search**:
+```bash
 POST /search
 Content-Type: application/json
 
 {
-  "query": "your search query",
+  "query": "wordpress plugins",
   "limit": 10,
   "include_answer": true,
-  "filters": {
-    "type": "post",
-    "categories": ["technology"]
-  }
+  "enable_ai_reranking": true
 }
 ```
 
-### Index Content
-```http
+**Index Content**:
+```bash
 POST /index
 Content-Type: application/json
 
 {
-  "force_reindex": false
+  "force_reindex": false,
+  "post_types": ["post", "page"]
 }
 ```
 
-### Health Check
-```http
+**Health Check**:
+```bash
 GET /health
 ```
 
-### Statistics
-```http
-GET /stats
+---
+
+## 🔧 Development
+
+### Project Structure
+
+```
+hybrid-search/
+├── main.py                     # FastAPI application entry point
+├── config.py                   # Configuration management
+├── constants.py                # Application constants
+├── error_responses.py          # Error handling utilities
+├── simple_hybrid_search.py     # Core search engine
+├── cerebras_llm.py            # LLM integration
+├── qdrant_manager.py          # Vector DB management
+├── wordpress_client.py        # WordPress API client
+├── input_validator.py         # Request validation
+├── structured_logger.py       # Logging utilities
+├── health_checker.py          # Health check utilities
+├── content_chunker.py         # Document chunking
+├── query_expander.py          # Query expansion
+├── zero_result_handler.py     # Zero-result handling
+├── suggestions.py             # Search suggestions
+├── requirements.txt           # Python dependencies
+├── Dockerfile                 # Docker configuration
+├── docker-compose.yml         # Docker Compose setup
+└── wordpress-plugin/          # WordPress plugin
+    ├── hybrid-search.php      # Plugin entry point
+    ├── includes/              # PHP classes
+    │   ├── API/              # API clients
+    │   ├── Admin/            # Admin UI
+    │   ├── AJAX/             # AJAX handlers
+    │   ├── Core/             # Core functionality
+    │   ├── Database/         # Database operations
+    │   ├── Frontend/         # Frontend UI
+    │   └── Services/         # Business logic
+    ├── assets/               # CSS/JS assets
+    └── templates/            # PHP templates
 ```
 
-### Query Suggestions
-```http
-GET /suggest?query=partial&limit=5
+### Running Tests
+
+```bash
+# Install test dependencies
+pip install pytest pytest-asyncio pytest-cov
+
+# Run tests
+pytest tests/
+
+# Run with coverage
+pytest --cov=. tests/
 ```
 
-## 🚀 Deployment
+### Code Quality
 
-### Railway Deployment
+```bash
+# Format code
+black *.py
 
-1. **Connect Repository**
-   - Connect your GitHub repository to Railway
-   - Railway will auto-detect the Python project
-   - Railway uses `requirements.txt` automatically
+# Type checking
+mypy *.py
 
-2. **Set Environment Variables**
-   - Add all required environment variables in Railway dashboard
-   - Use the values from `scs-production.env` file
-   - Ensure Cerebras API key is set
+# Linting
+ruff check .
+```
 
-3. **Deploy**
-   - Railway will automatically build and deploy
-   - Get your API URL from the deployment
-   - **Note**: No `railway.toml` file needed - Railway uses automatic detection
+---
+
+## 🚢 Deployment
 
 ### Docker Deployment
 
 ```bash
-# Build and run
-docker-compose up -d
+# Build image
+docker build -t hybrid-search:latest .
 
-# Check logs
-docker-compose logs -f
-
-# Scale services
-docker-compose up -d --scale hybrid-search-api=3
+# Run container
+docker run -d \
+  --name hybrid-search \
+  -p 8000:8000 \
+  --env-file .env \
+  hybrid-search:latest
 ```
 
-## 📊 Usage Examples
-
-### Basic Search
-```python
-import requests
-
-response = requests.post('https://your-api.railway.app/search', json={
-    'query': 'machine learning tutorials',
-    'limit': 5
-})
-
-results = response.json()
-```
-
-### Search with AI Answer
-```python
-response = requests.post('https://your-api.railway.app/search', json={
-    'query': 'how to optimize WordPress performance',
-    'include_answer': True,
-    'limit': 3
-})
-
-data = response.json()
-print(f"Answer: {data['answer']}")
-print(f"Sources: {len(data['results'])}")
-```
-
-### Filtered Search
-```python
-response = requests.post('https://your-api.railway.app/search', json={
-    'query': 'python programming',
-    'filters': {
-        'type': 'post',
-        'categories': ['programming', 'tutorials']
-    }
-})
-```
-
-## 🔍 Search Features
-
-### Hybrid Retrieval
-- **Dense Vectors**: Semantic similarity using embeddings
-- **Sparse Vectors**: Keyword matching with TF-IDF
-- **Combined Scoring**: Weighted combination for optimal results
-
-### Query Processing
-- **Query Rewriting**: LLM-powered query optimization
-- **Query Expansion**: Related terms and synonyms
-- **Intent Classification**: Understanding search intent
-
-### Result Enhancement
-- **Relevance Scoring**: Visual score indicators
-- **Content Highlighting**: Query term highlighting
-- **AI Answers**: Contextual answers based on results
-
-## 🛠️ Development
-
-### Project Structure
-```
-search/
-├── main.py                 # FastAPI application
-├── config.py              # Configuration management
-├── wordpress_client.py    # WordPress API client
-├── qdrant_manager.py      # Qdrant vector database
-├── llamaindex_orchestrator.py # LlamaIndex integration
-├── cerebras_llm.py        # Cerebras LLM client
-├── requirements.txt       # Python dependencies
-├── Dockerfile            # Container configuration
-├── docker-compose.yml    # Local development setup
-├── railway.json          # Railway deployment config
-└── wordpress-plugin/     # WordPress plugin files
-    ├── hybrid-search.php
-    ├── templates/
-    └── assets/
-```
-
-### Adding Custom Features
-
-1. **Custom Retrievers**: Extend `HybridRetriever` class
-2. **Additional Filters**: Modify `_apply_filters` function
-3. **Custom Scoring**: Update scoring algorithms in `QdrantManager`
-4. **New Endpoints**: Add routes to `main.py`
-
-### Testing
+### Docker Compose
 
 ```bash
-# Run tests
-python -m pytest tests/
-
-# Test API endpoints
-curl -X POST http://localhost:8000/search \
-  -H "Content-Type: application/json" \
-  -d '{"query": "test query"}'
+docker-compose up -d
 ```
 
-## 🔧 Troubleshooting
+### Railway Deployment
+
+1. Connect your GitHub repository to Railway
+2. Add environment variables in Railway dashboard
+3. Deploy automatically on git push
+
+### Production Checklist
+
+- [ ] Set `API_HOST=0.0.0.0` for external access
+- [ ] Configure proper CORS origins (not `*`)
+- [ ] Enable HTTPS with SSL/TLS certificates
+- [ ] Set up rate limiting
+- [ ] Configure log aggregation
+- [ ] Set up monitoring and alerts
+- [ ] Enable automatic backups
+- [ ] Test disaster recovery procedures
+
+---
+
+## 🔐 Security
+
+### Best Practices
+
+1. **API Keys**: Store securely in environment variables
+2. **CORS**: Restrict to specific domains
+3. **Rate Limiting**: Implement per-IP rate limits
+4. **Input Validation**: All inputs are validated and sanitized
+5. **SQL Injection**: Use parameterized queries only
+6. **XSS Protection**: HTML escaping on all output
+7. **HTTPS**: Always use HTTPS in production
+
+### Reporting Security Issues
+
+Please report security vulnerabilities to: security@your-domain.com
+
+---
+
+## 🐛 Troubleshooting
 
 ### Common Issues
 
-1. **API Connection Failed**
-   - Check Cerebras API key
-   - Verify API URL configuration
-   - Test with `/health` endpoint
+**Problem**: Search returns no results
+- **Solution**: Check if content is indexed: `GET /stats`
+- **Solution**: Verify Qdrant is running: `GET /health`
 
-2. **WordPress Integration Issues**
-   - Ensure REST API is enabled
-   - Check application password
-   - Verify plugin activation
+**Problem**: Slow search performance
+- **Solution**: Enable caching in WordPress plugin settings
+- **Solution**: Reduce `limit` parameter in search requests
+- **Solution**: Disable AI reranking for faster results
 
-3. **Search Results Empty**
-   - Run content indexing: `POST /index`
-   - Check Qdrant connection
-   - Verify WordPress content exists
+**Problem**: API connection timeout
+- **Solution**: Increase `SEARCH_TIMEOUT` in `.env`
+- **Solution**: Check network connectivity to Qdrant and Cerebras
 
-4. **Performance Issues**
-   - Adjust `MAX_SEARCH_RESULTS`
-   - Optimize embedding dimensions
-   - Consider caching strategies
+**Problem**: WordPress plugin not connecting to API
+- **Solution**: Verify API URL in plugin settings
+- **Solution**: Check CORS configuration in `main.py`
+- **Solution**: Ensure API is accessible from WordPress server
 
 ### Debug Mode
 
-```bash
-# Enable debug logging
-export LOG_LEVEL=DEBUG
-uvicorn main:app --reload --log-level debug
+Enable debug logging:
+
+```python
+# main.py
+import logging
+logging.basicConfig(level=logging.DEBUG)
 ```
 
-## 📈 Performance Optimization
+### Logs
 
-### Scaling Considerations
-- **Horizontal Scaling**: Multiple API instances
-- **Caching**: Redis for frequent queries
-- **CDN**: Static asset delivery
-- **Database**: Qdrant cluster for large datasets
+Check logs for errors:
 
-### Monitoring
-- **Health Checks**: Built-in endpoint monitoring
-- **Metrics**: Response times and error rates
-- **Logging**: Comprehensive logging for debugging
+```bash
+# Application logs
+tail -f logs/hybrid-search.log
+
+# Docker logs
+docker logs hybrid-search
+
+# WordPress logs
+wp-content/debug.log
+```
+
+---
 
 ## 🤝 Contributing
 
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+
+### Development Setup
+
 1. Fork the repository
-2. Create a feature branch
+2. Create a feature branch: `git checkout -b feature-name`
 3. Make your changes
-4. Add tests
-5. Submit a pull request
+4. Run tests: `pytest tests/`
+5. Commit changes: `git commit -m "Add feature"`
+6. Push to branch: `git push origin feature-name`
+7. Open a Pull Request
+
+### Code Standards
+
+- Follow PEP 8 for Python code
+- Use type hints for all functions
+- Write comprehensive docstrings
+- Add unit tests for new features
+- Update documentation
+
+---
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the GPL v2 License - see the [LICENSE](LICENSE) file for details.
+
+---
 
 ## 🙏 Acknowledgments
 
-- **Qdrant**: Vector database for hybrid search
-- **LlamaIndex**: LLM application framework
-- **Cerebras**: High-performance LLM inference
+- **Qdrant**: Vector database engine
+- **Cerebras**: Fast LLM inference
 - **FastAPI**: Modern Python web framework
-- **Railway**: Developer-friendly deployment platform
+- **WordPress**: Content management system
+- **Sentence Transformers**: Semantic embeddings
+
+---
+
+## 📞 Support
+
+- **Documentation**: https://docs.hybrid-search.com
+- **GitHub Issues**: https://github.com/your-org/hybrid-search/issues
+- **Email**: support@your-domain.com
+- **Discord**: https://discord.gg/hybrid-search
+
+---
+
+## 🗺️ Roadmap
+
+### Version 2.16.0 (Q1 2024)
+
+- [ ] Multi-language support
+- [ ] Custom embedding models
+- [ ] GraphQL API
+- [ ] WebSocket support for real-time updates
+
+### Version 3.0.0 (Q2 2024)
+
+- [ ] Distributed architecture
+- [ ] Advanced analytics dashboard
+- [ ] A/B testing framework
+- [ ] Machine learning model fine-tuning
+
+---
+
+<div align="center">
+
+**Made with ❤️ by the Hybrid Search Team**
+
+[Website](https://hybrid-search.com) • [Twitter](https://twitter.com/hybridsearch) • [LinkedIn](https://linkedin.com/company/hybridsearch)
+
+</div>
+

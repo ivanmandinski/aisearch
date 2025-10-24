@@ -4,7 +4,7 @@ Cerebras LLM integration for query rewriting and answering.
 import logging
 from typing import List, Dict, Any, Optional
 import openai
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 import asyncio
 import json
 from config import settings
@@ -16,7 +16,13 @@ class CerebrasLLM:
     """Cerebras LLM client for query rewriting and answering."""
     
     def __init__(self):
+        # Synchronous client for backwards compatibility
         self.client = OpenAI(
+            api_key=settings.cerebras_api_key,
+            base_url=settings.cerebras_api_base
+        )
+        # Async client for better performance
+        self.async_client = AsyncOpenAI(
             api_key=settings.cerebras_api_key,
             base_url=settings.cerebras_api_base
         )
@@ -395,6 +401,185 @@ Respond in JSON format:
                 }
             }
     
+    async def rerank_results_async(
+        self, 
+        query: str, 
+        results: List[Dict[str, Any]],
+        custom_instructions: str = "",
+        ai_weight: float = 0.7
+    ) -> Dict[str, Any]:
+        """
+        Use LLM to rerank search results based on semantic relevance (async version).
+        
+        Args:
+            query: User's search query
+            results: List of search results with titles, excerpts, scores
+            custom_instructions: User's custom instructions for AI
+            ai_weight: How much to weight AI score (0-1)
+            
+        Returns:
+            {
+                'results': Reranked results with ai_score and hybrid_score,
+                'metadata': Stats about reranking
+            }
+        """
+        import time
+        start_time = time.time()
+        
+        try:
+            if not results:
+                return {'results': [], 'metadata': {}}
+            
+            logger.info(f"AI Reranking {len(results)} results for query: '{query}'")
+            
+            # Prepare results for LLM
+            results_text = self._format_results_for_reranking(results)
+            
+            # Build system prompt with custom instructions
+            system_prompt = """You are an expert search relevance analyzer. 
+Your job is to score how well each search result matches the user's query based on semantic relevance, user intent, and content quality."""
+
+            if custom_instructions:
+                system_prompt += f"\n\n🎯 CUSTOM RANKING CRITERIA (HIGH PRIORITY):\n{custom_instructions}"
+            
+            # Build user prompt
+            user_prompt = f"""
+Analyze these search results for the query: "{query}"
+
+{results_text}
+
+📊 SCORING CRITERIA (Rate each result 0-100):
+
+1. **Semantic Relevance** (40 points)
+   - Does the content match the query's semantic meaning?
+   - Is it exactly what the user is looking for?
+
+2. **User Intent** (30 points)
+   - Does it address what the user wants to accomplish?
+   - For "how to" queries: Does it provide actionable steps?
+   - For "what is" queries: Does it provide clear explanations?
+   - For purchase intent: Does it offer products/services?
+
+3. **Content Quality** (20 points)
+   - Based on title and excerpt, does it seem comprehensive?
+   - Is it from a credible source (inferred from title/URL)?
+   - Does it appear to be high-quality content?
+
+4. **Specificity** (10 points)
+   - Is it specifically about the topic or too broad/general?
+   - Does it cover the exact aspect the user asked about?
+
+{f"5. **Custom Criteria** (HIGHEST PRIORITY):{chr(10)}{custom_instructions}" if custom_instructions else ""}
+
+🎯 RETURN FORMAT:
+Return a JSON array with scores for EACH result (include all {len(results)} results):
+[
+  {{"id": "1", "ai_score": 95, "reason": "Direct answer to query with actionable steps"}},
+  {{"id": "2", "ai_score": 88, "reason": "Comprehensive guide covering all aspects"}},
+  {{"id": "3", "ai_score": 72, "reason": "Related but somewhat general"}},
+  ...
+]
+
+⚠️ IMPORTANT:
+- Include ALL {len(results)} results in the SAME ORDER
+- Be strict but fair in scoring
+- Higher score = more relevant to the query
+- Consider the custom criteria if provided
+- Scores should range from 0-100
+"""
+
+            # Call LLM asynchronously
+            logger.info("Calling Cerebras LLM for reranking (async)...")
+            response = await self.async_client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1,  # Low temperature for consistent scoring
+                max_tokens=2000
+            )
+            
+            # Parse response
+            response_text = response.choices[0].message.content.strip()
+            logger.info(f"LLM response received ({len(response_text)} chars)")
+            
+            # Extract JSON from response (handle markdown code blocks)
+            if "```json" in response_text:
+                response_text = response_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in response_text:
+                response_text = response_text.split("```")[1].split("```")[0].strip()
+            
+            ai_scores = json.loads(response_text)
+            logger.info(f"Parsed {len(ai_scores)} AI scores")
+            
+            # Update results with AI scores
+            reranked_results = []
+            for result in results:
+                # Find matching AI score
+                ai_result = next((r for r in ai_scores if str(r.get('id')) == str(result['id'])), None)
+                
+                if ai_result:
+                    tfidf_score = result.get('score', 0.0)
+                    ai_score = ai_result['ai_score'] / 100  # Normalize to 0-1
+                    
+                    # Calculate hybrid score using custom weight
+                    tfidf_weight = 1.0 - ai_weight
+                    hybrid_score = (tfidf_score * tfidf_weight) + (ai_score * ai_weight)
+                    
+                    result['ai_score'] = ai_score
+                    result['ai_reason'] = ai_result.get('reason', '')
+                    result['hybrid_score'] = hybrid_score
+                    result['score'] = hybrid_score  # Update main score for sorting
+                    
+                    logger.debug(f"Result '{result['title'][:50]}': TF-IDF={tfidf_score:.3f}, AI={ai_score:.3f}, Hybrid={hybrid_score:.3f}")
+                else:
+                    # Fallback if AI didn't score this result
+                    result['ai_score'] = result.get('score', 0.0)
+                    result['hybrid_score'] = result.get('score', 0.0)
+                    result['ai_reason'] = 'No AI scoring available'
+                    logger.warning(f"No AI score for result ID: {result['id']}")
+                
+                reranked_results.append(result)
+            
+            # Sort by hybrid score (highest first)
+            reranked_results.sort(key=lambda x: x.get('hybrid_score', 0), reverse=True)
+            
+            # Calculate stats
+            response_time = time.time() - start_time
+            tokens_used = response.usage.total_tokens if hasattr(response, 'usage') else 0
+            cost = (tokens_used / 1_000_000) * 0.10  # Cerebras pricing (~$0.10 per 1M tokens)
+            
+            metadata = {
+                'ai_reranking_used': True,
+                'ai_response_time': response_time,
+                'ai_tokens_used': tokens_used,
+                'ai_cost': cost,
+                'ai_weight': ai_weight,
+                'tfidf_weight': 1.0 - ai_weight,
+                'custom_instructions_used': bool(custom_instructions),
+                'results_reranked': len(reranked_results)
+            }
+            
+            logger.info(f"✅ AI reranking complete! Time: {response_time:.2f}s, Cost: ${cost:.6f}, Tokens: {tokens_used}")
+            logger.info(f"Top result: '{reranked_results[0]['title']}' (hybrid: {reranked_results[0]['hybrid_score']:.3f})")
+            
+            return {
+                'results': reranked_results,
+                'metadata': metadata
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error in AI reranking: {e}")
+            # Fallback to original scores
+            return {
+                'results': results,
+                'metadata': {
+                    'ai_reranking_used': False,
+                    'ai_error': str(e)
+                }
+            }
+    
     def rerank_results(
         self, 
         query: str, 
@@ -403,7 +588,10 @@ Respond in JSON format:
         ai_weight: float = 0.7
     ) -> Dict[str, Any]:
         """
-        Use LLM to rerank search results based on semantic relevance.
+        Use LLM to rerank search results based on semantic relevance (sync wrapper).
+        
+        This is a synchronous wrapper around rerank_results_async for backwards compatibility.
+        Use rerank_results_async directly in async contexts for better performance.
         
         Args:
             query: User's search query

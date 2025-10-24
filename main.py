@@ -3,20 +3,33 @@ FastAPI service for hybrid search endpoints.
 """
 import logging
 from typing import List, Dict, Any, Optional
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError as PydanticValidationError
 import asyncio
 from datetime import datetime
 import uvicorn
+import uuid
 
 from config import settings
 from input_validator import validate_search_request, validate_index_request, validate_document, sanitize_string
 from connection_manager import connection_manager, cleanup_connections
 from structured_logger import get_logger, set_request_context, clear_request_context, performance_logger, security_logger, business_logger
 from health_checker import get_health_status, get_quick_health_status
+from error_responses import (
+    create_error_response, 
+    create_success_response,
+    validate_search_params,
+    validate_index_params,
+    SearchError,
+    ValidationError,
+    ServiceUnavailableError,
+    bad_request,
+    service_unavailable,
+    internal_error
+)
 
 # Try to import components with error handling
 try:
@@ -244,43 +257,44 @@ async def quick_health_check():
 
 
 @app.post("/search")
-async def search(request: SearchRequest):
-    """Perform hybrid search on indexed content."""
+async def search(request: SearchRequest, http_request: Request):
+    """
+    Perform hybrid search on indexed content.
+    
+    Args:
+        request: Search request with query, limit, and options
+        http_request: HTTP request for tracking
+    
+    Returns:
+        JSON response with search results and metadata
+    
+    Raises:
+        ValidationError: If request parameters are invalid
+        ServiceUnavailableError: If search system is not available
+        SearchError: If search operation fails
+    """
     start_time = datetime.utcnow()
+    request_id = str(uuid.uuid4())
     
     try:
-        # Validate and sanitize request data
+        # Validate search parameters
         try:
-            validated_data = validate_search_request(request.model_dump())
-        except ValueError as e:
-            logger.warning(f"Search request validation failed: {e}")
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "success": False,
-                    "error": str(e),
-                    "results": [],
-                    "metadata": {
-                        "query": request.query,
-                        "response_time": 0,
-                        "status_code": 400
-                    }
-                }
+            validate_search_params(
+                query=request.query,
+                limit=request.limit,
+                offset=0
             )
+        except ValidationError as e:
+            logger.warning(f"Search validation failed: {e.message}")
+            return create_error_response(e, request_id=request_id)
+        
         # Check if search system is initialized
         if not search_system:
             logger.error("Search system not initialized")
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "success": False,
-                    "error": "Search service not initialized. Please check Railway logs for initialization errors.",
-                    "results": [],
-                    "metadata": {
-                        "query": request.query,
-                        "response_time": 0,
-                        "status_code": 503
-                    }
+            return service_unavailable(
+                "search",
+                details={
+                    "message": "Search service not initialized. Please check server logs."
                 }
             )
         
@@ -354,42 +368,47 @@ async def search(request: SearchRequest):
         
         processing_time = (datetime.utcnow() - start_time).total_seconds()
         
-        # Return JSON response directly (avoid Pydantic serialization issues)
-        response_content = {
-            "success": True,
-            "results": results,
-            "metadata": {
-                "query": request.query,
-                "total_results": len(results),
-                "response_time": processing_time * 1000,  # Convert to milliseconds
-                "has_answer": answer is not None,
-                "answer": answer or "",
-                "query_analysis": query_analysis,
-                **search_metadata  # Include AI reranking metadata
-            }
+        # Build metadata
+        metadata = {
+            "query": request.query,
+            "total_results": len(results),
+            "response_time": processing_time * 1000,  # Convert to milliseconds
+            "has_answer": answer is not None,
+            "answer": answer or "",
+            "query_analysis": query_analysis,
+            "request_id": request_id,
+            **search_metadata  # Include AI reranking metadata
         }
         
         # Add zero-result handling data if applicable
         if zero_result_data:
-            response_content["zero_result_handling"] = zero_result_data
+            metadata["zero_result_handling"] = zero_result_data
         
-        return JSONResponse(content=response_content)
+        # Return standardized success response
+        return JSONResponse(
+            content=create_success_response(
+                data={"results": results},
+                message="Search completed successfully" if results else "No results found",
+                metadata=metadata
+            )
+        )
+        
+    except SearchError as e:
+        # Handle known search errors
+        logger.error(f"Search error: {e.message}", exc_info=True)
+        return create_error_response(e, request_id=request_id)
         
     except Exception as e:
-        logger.error(f"Search error: {e}", exc_info=True)
-        processing_time = (datetime.utcnow() - start_time).total_seconds()
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "error": f"Search failed: {str(e)}",
-                "results": [],
-                "metadata": {
-                    "query": request.query,
-                    "response_time": processing_time * 1000,  # Convert to milliseconds
-                    "status_code": 500
-                }
-            }
+        # Handle unexpected errors
+        logger.error(f"Unexpected search error: {e}", exc_info=True)
+        return create_error_response(
+            SearchError(
+                message=f"Search operation failed: {str(e)}",
+                code="SEARCH_FAILED",
+                status_code=500
+            ),
+            request_id=request_id,
+            include_traceback=settings.api_version == "development"  # Only in dev
         )
 
 

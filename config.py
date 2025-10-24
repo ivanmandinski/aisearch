@@ -1,59 +1,134 @@
 """
 Configuration module for the hybrid search system.
+
+This module defines all application settings loaded from environment variables.
+Settings are validated using Pydantic for type safety.
 """
 import os
-from typing import Optional
+from typing import Optional, Literal
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    """Application settings loaded from environment variables."""
+    """
+    Application settings loaded from environment variables.
     
-    # Qdrant Configuration
+    All settings can be overridden via environment variables or .env file.
+    Type validation is performed automatically by Pydantic.
+    """
+    
+    # ========================================================================
+    # QDRANT CONFIGURATION
+    # ========================================================================
+    
     qdrant_url: str = "http://localhost:6333"
+    """Qdrant vector database URL"""
+    
     qdrant_api_key: Optional[str] = None
+    """Optional Qdrant API key for authentication"""
+    
     qdrant_collection_name: str = "wordpress_content"
+    """Name of the Qdrant collection for storing vectors"""
     
-    # Cerebras LLM Configuration
+    # ========================================================================
+    # CEREBRAS LLM CONFIGURATION
+    # ========================================================================
+    
     cerebras_api_base: str = "https://api.cerebras.ai/v1"
+    """Cerebras API base URL"""
+    
     cerebras_api_key: str = ""
+    """Cerebras API key for authentication"""
+    
     cerebras_model: str = "cerebras-llama-2-7b-chat"
+    """Cerebras model name to use"""
     
-    # OpenAI Configuration (for embeddings)
+    # ========================================================================
+    # OPENAI CONFIGURATION (for embeddings)
+    # ========================================================================
+    
     openai_api_key: str = ""
+    """OpenAI API key for embedding generation"""
     
-    # Embedding and Sparse Models
+    # ========================================================================
+    # EMBEDDING AND SPARSE MODELS
+    # ========================================================================
+    
     embed_model: str = "text-embedding-ada-002"
-    sparse_model: str = "tfidf"
+    """Embedding model name"""
     
-    # WordPress Configuration
+    sparse_model: Literal["tfidf", "bm25"] = "tfidf"
+    """Sparse vector model (tfidf or bm25)"""
+    
+    # ========================================================================
+    # WORDPRESS CONFIGURATION
+    # ========================================================================
+    
     wordpress_url: str = ""
+    """WordPress site URL"""
+    
     wordpress_username: str = ""
+    """WordPress username for API authentication"""
+    
     wordpress_password: str = ""
+    """WordPress application password"""
+    
     wordpress_api_url: str = ""
+    """WordPress REST API endpoint URL"""
     
-    # API Configuration
+    # ========================================================================
+    # API CONFIGURATION
+    # ========================================================================
+    
     api_host: str = "0.0.0.0"
+    """API server host"""
+    
     api_port: int = 8000
+    """API server port"""
+    
     api_title: str = "Hybrid Search API"
-    api_version: str = "1.0.0"
+    """API title for documentation"""
     
-    # Search Configuration
+    api_version: str = "2.15.1"
+    """API version number"""
+    
+    # ========================================================================
+    # SEARCH CONFIGURATION
+    # ========================================================================
+    
     max_search_results: int = 10
-    search_timeout: int = 30
-    embedding_dimension: int = 384
-    chunk_size: int = 512
-    default_site_base: str = ""
-    search_page_title: str = "Hybrid Search"
+    """Maximum number of search results to return"""
     
-    # AI Instructions Configuration
+    search_timeout: int = 30
+    """Search operation timeout in seconds"""
+    
+    embedding_dimension: int = 384
+    """Dimension of embedding vectors"""
+    
+    chunk_size: int = 512
+    """Size of content chunks for indexing"""
+    
+    default_site_base: str = ""
+    """Default base URL for the site"""
+    
+    search_page_title: str = "Hybrid Search"
+    """Title for the search page"""
+    
+    # ========================================================================
+    # AI INSTRUCTIONS CONFIGURATION
+    # ========================================================================
+    
     ai_instructions: str = ""
-    strict_ai_answer_mode: bool = True  # Only use search results for AI answers
+    """Default AI instructions for answer generation"""
+    
+    strict_ai_answer_mode: bool = True
+    """If True, AI answers only use search results (no external knowledge)"""
     
     class Config:
+        """Pydantic configuration."""
         env_file = ".env"
         case_sensitive = False
 
 
 # Global settings instance
-settings = Settings()
+settings: Settings = Settings()

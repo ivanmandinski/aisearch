@@ -283,3 +283,4 @@ def log_api_response(logger: StructuredLogger, method: str, endpoint: str, statu
         duration_ms=round(duration * 1000, 2),
         **kwargs
     )
+

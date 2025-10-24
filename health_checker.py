@@ -414,3 +414,4 @@ async def get_quick_health_status() -> Dict[str, Any]:
             "timestamp": datetime.utcnow().isoformat(),
             "error": str(e)
         }
+

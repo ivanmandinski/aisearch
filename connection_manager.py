@@ -161,3 +161,4 @@ async def cleanup_connections():
 def get_connection_manager() -> ConnectionPoolManager:
     """Get the global connection pool manager."""
     return connection_manager
+

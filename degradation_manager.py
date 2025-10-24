@@ -354,3 +354,4 @@ def get_degradation_manager() -> GracefulDegradationManager:
 def get_search_degradation_manager() -> SearchDegradationManager:
     """Get the global search degradation manager."""
     return search_degradation_manager
+

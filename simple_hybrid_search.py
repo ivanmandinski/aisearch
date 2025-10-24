@@ -10,6 +10,26 @@ from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import json
 from config import settings
+from constants import (
+    EMBEDDING_DIMENSION,
+    TFIDF_MAX_FEATURES,
+    TFIDF_NGRAM_MIN,
+    TFIDF_NGRAM_MAX,
+    MIN_CONTENT_LENGTH,
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_CHUNK_OVERLAP,
+    INDEX_BATCH_SIZE,
+    MAX_SEARCH_RESULTS_FOR_ANSWER,
+    MIN_RERANK_CANDIDATES,
+    RERANK_BUFFER_SIZE,
+    MAX_RESULT_LIMIT,
+    RELEVANCE_HIGH_THRESHOLD,
+    RELEVANCE_MEDIUM_THRESHOLD,
+    RELEVANCE_LOW_THRESHOLD,
+    OPENAI_EMBEDDING_MODEL,
+    MAX_LLM_INPUT_LENGTH,
+    DEFAULT_EMBEDDING_MODEL
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,9 +106,9 @@ class SimpleHybridSearch:
             self.llm_client = None
         
         self.tfidf_vectorizer = TfidfVectorizer(
-            max_features=10000,
+            max_features=TFIDF_MAX_FEATURES,
             stop_words='english',
-            ngram_range=(1, 2)
+            ngram_range=(TFIDF_NGRAM_MIN, TFIDF_NGRAM_MAX)
         )
         self.tfidf_matrix = None
         self.documents = []
@@ -175,7 +195,7 @@ class SimpleHybridSearch:
             
             # Chunk long documents
             from content_chunker import ContentChunker
-            chunker = ContentChunker(chunk_size=1000, overlap=200)
+            chunker = ContentChunker(chunk_size=DEFAULT_CHUNK_SIZE, overlap=DEFAULT_CHUNK_OVERLAP)
             chunked_documents = chunker.chunk_documents(documents)
             
             logger.info(f"After chunking: {len(chunked_documents)} total documents/chunks")
@@ -191,7 +211,7 @@ class SimpleHybridSearch:
                     document_texts.append(combined_text)
                     
                     # Skip embedding generation for now - use zero vector
-                    embedding = [0.0] * 384
+                    embedding = [0.0] * EMBEDDING_DIMENSION
                     
                     # Prepare sparse vector
                     processed_doc = {
@@ -274,8 +294,8 @@ class SimpleHybridSearch:
                 offset = 0
             if limit < 1:
                 limit = 10
-            if limit > 100:  # Add reasonable limit
-                limit = 100
+            if limit > MAX_RESULT_LIMIT:
+                limit = MAX_RESULT_LIMIT
             
             logger.info(f"Search request: query='{query}', offset={offset}, limit={limit}")
             
@@ -331,11 +351,12 @@ class SimpleHybridSearch:
                 
                 # For pagination to work with AI reranking, we need to rerank enough candidates
                 # to cover the requested offset + limit
-                rerank_limit = max(20, offset + limit + 10)  # Rerank enough to cover pagination
+                rerank_limit = max(MIN_RERANK_CANDIDATES, offset + limit + RERANK_BUFFER_SIZE)
                 top_candidates = candidates[:min(rerank_limit, len(candidates))]
                 
                 try:
-                    reranking_result = self.llm_client.rerank_results(
+                    # Use async version for better performance
+                    reranking_result = await self.llm_client.rerank_results_async(
                         query=query,
                         results=top_candidates,
                         custom_instructions=ai_reranking_instructions,
@@ -401,7 +422,9 @@ class SimpleHybridSearch:
             # Generate answer using LLM with custom instructions
             if self.llm_client:
                 try:
-                    answer = self.llm_client.generate_answer(query, results, custom_instructions)
+                    # Use top N results for answer generation
+                    top_results = results[:MAX_SEARCH_RESULTS_FOR_ANSWER]
+                    answer = self.llm_client.generate_answer(query, top_results, custom_instructions)
                 except Exception as e:
                     logger.error(f"LLM answer generation failed: {e}")
                     answer = "I found relevant results but couldn't generate a summary at this time."
@@ -436,16 +459,16 @@ class SimpleHybridSearch:
                     from openai import OpenAI
                     client = OpenAI(api_key=settings.openai_api_key)
                     response = client.embeddings.create(
-                        model="text-embedding-3-small",
-                        input=text[:8000]  # Limit input length
+                        model=OPENAI_EMBEDDING_MODEL,
+                        input=text[:MAX_LLM_INPUT_LENGTH]
                     )
                     embedding = response.data[0].embedding
                     
-                    # Pad or truncate to 384 dimensions
-                    if len(embedding) < 384:
-                        embedding = embedding + [0.0] * (384 - len(embedding))
+                    # Pad or truncate to target dimension
+                    if len(embedding) < EMBEDDING_DIMENSION:
+                        embedding = embedding + [0.0] * (EMBEDDING_DIMENSION - len(embedding))
                     else:
-                        embedding = embedding[:384]
+                        embedding = embedding[:EMBEDDING_DIMENSION]
                     
                     return embedding
                 except Exception as e:
@@ -463,13 +486,13 @@ class SimpleHybridSearch:
                     show_progress_bar=False
                 )
                 
-                # Ensure it's exactly 384 dimensions (model outputs 384)
-                if len(embedding) < 384:
+                # Ensure it's exactly the target dimension
+                if len(embedding) < EMBEDDING_DIMENSION:
                     # Pad if needed
-                    embedding = np.pad(embedding, (0, 384 - len(embedding)), mode='constant')
-                elif len(embedding) > 384:
+                    embedding = np.pad(embedding, (0, EMBEDDING_DIMENSION - len(embedding)), mode='constant')
+                elif len(embedding) > EMBEDDING_DIMENSION:
                     # Truncate if needed
-                    embedding = embedding[:384]
+                    embedding = embedding[:EMBEDDING_DIMENSION]
                 
                 return embedding.tolist()
             
@@ -499,17 +522,17 @@ class SimpleHybridSearch:
                 value = int(hex_pair, 16) / 255.0  # Normalize to 0-1
                 embedding.append(value)
             
-            # Pad or truncate to exactly 384 dimensions
-            while len(embedding) < 384:
+            # Pad or truncate to exactly the target dimension
+            while len(embedding) < EMBEDDING_DIMENSION:
                 embedding.append(0.0)
-            embedding = embedding[:384]
+            embedding = embedding[:EMBEDDING_DIMENSION]
             
             return embedding
                 
         except Exception as e:
             logger.error(f"Error in hash-based embedding: {e}")
             # Return zero vector as fallback
-            return [0.0] * 384
+            return [0.0] * EMBEDDING_DIMENSION
     
     def _get_sparse_vector(self, text: str) -> Dict[int, float]:
         """Get sparse vector using TF-IDF."""
