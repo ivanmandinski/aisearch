@@ -210,8 +210,14 @@ class SimpleHybridSearch:
                     combined_text = f"{doc['title']} {doc['content']}"
                     document_texts.append(combined_text)
                     
-                    # Skip embedding generation for now - use zero vector
-                    embedding = [0.0] * EMBEDDING_DIMENSION
+                    # Generate real embeddings (tries local first, then OpenAI)
+                    try:
+                        embedding = await self._generate_openai_embedding(combined_text)
+                        logger.debug(f"Generated embedding for document {doc['id']}")
+                    except Exception as e:
+                        logger.warning(f"Failed to generate embedding for {doc['id']}: {e}, using zero vector")
+                        logger.warning("To enable vector search: pip install sentence-transformers OR set OPENAI_API_KEY")
+                        embedding = [0.0] * EMBEDDING_DIMENSION
                     
                     # Prepare sparse vector
                     processed_doc = {
@@ -255,7 +261,36 @@ class SimpleHybridSearch:
             # Store documents in memory for TF-IDF search
             self.documents = processed_docs
             
-            # Skip Qdrant indexing for now - use in-memory search only
+            # Store in Qdrant for hybrid search (using zero vectors for now)
+            try:
+                from qdrant_manager import QdrantManager
+                qdrant = QdrantManager()
+                
+                # Convert to Qdrant format
+                from qdrant_client.models import PointStruct
+                points = []
+                for doc in processed_docs:
+                    point = PointStruct(
+                        id=abs(hash(doc['id'])) % (10 ** 10),  # Convert string ID to int
+                        vector=doc['embedding'],
+                        payload={
+                            'id': doc['id'],
+                            'title': doc['title'],
+                            'content': doc['content'],
+                            'url': doc['url'],
+                            'type': doc['type'],
+                            'date': doc['date'],
+                            'excerpt': doc['excerpt']
+                        }
+                    )
+                    points.append(point)
+                
+                # Upsert to Qdrant
+                qdrant.upsert_documents(points)
+                logger.info(f"Successfully indexed {len(points)} documents in Qdrant")
+            except Exception as e:
+                logger.warning(f"Could not index to Qdrant (using TF-IDF only): {e}")
+            
             logger.info(f"Successfully indexed {len(processed_docs)} documents in memory")
             return True
                 
@@ -586,6 +621,12 @@ class SimpleHybridSearch:
             # Sort by similarity and get top results
             similarities.sort(key=lambda x: x[1], reverse=True)
             
+            # Debug logging
+            if similarities:
+                logger.info(f"TF-IDF top 5 scores: {[f'{s[1]:.4f}' for s in similarities[:5]]}")
+            else:
+                logger.warning("TF-IDF returned no similarities")
+            
             # Apply offset and limit to get the correct slice
             start_idx = offset
             end_idx = offset + limit
@@ -594,6 +635,7 @@ class SimpleHybridSearch:
             results = []
             for i, (doc_idx, score) in enumerate(paginated_similarities):
                 if score > 0:  # Only include results with positive similarity
+                    logger.debug(f"Including result {i+1}: doc_idx={doc_idx}, score={score:.4f}")
                     doc = self.documents[doc_idx]
                     result = {
                         'id': doc['id'],
@@ -620,6 +662,103 @@ class SimpleHybridSearch:
         except Exception as e:
             logger.error(f"Error in TF-IDF search: {e}")
             return []
+    
+    async def _generate_openai_embedding(self, text: str) -> List[float]:
+        """
+        Generate embedding using available embedding service.
+        Tries local model first (FREE), falls back to OpenAI if configured.
+        
+        Args:
+            text: Text to embed
+            
+        Returns:
+            Embedding vector (384 dimensions)
+        """
+        # Try local sentence-transformers first (FREE and FAST!)
+        if SENTENCE_TRANSFORMERS_AVAILABLE:
+            try:
+                return await self._generate_local_embedding(text)
+            except Exception as e:
+                logger.warning(f"Local embedding failed: {e}, trying OpenAI...")
+        
+        # Fall back to OpenAI if configured
+        if settings.openai_api_key and settings.openai_api_key != "your_openai_api_key_here":
+            try:
+                from openai import AsyncOpenAI
+                
+                client = AsyncOpenAI(api_key=settings.openai_api_key)
+                
+                # Truncate text if too long
+                max_length = 8000
+                if len(text) > max_length:
+                    text = text[:max_length]
+                
+                response = await client.embeddings.create(
+                    model=settings.embed_model or "text-embedding-ada-002",
+                    input=text
+                )
+                
+                embedding = response.data[0].embedding
+                
+                # OpenAI returns 1536 dimensions, we need 384
+                if len(embedding) != EMBEDDING_DIMENSION:
+                    logger.debug(f"Adjusting embedding from {len(embedding)} to {EMBEDDING_DIMENSION} dimensions")
+                    if len(embedding) < EMBEDDING_DIMENSION:
+                        embedding = embedding + [0.0] * (EMBEDDING_DIMENSION - len(embedding))
+                    else:
+                        embedding = embedding[:EMBEDDING_DIMENSION]
+                
+                return embedding
+                
+            except Exception as e:
+                logger.error(f"OpenAI embedding failed: {e}")
+                raise
+        
+        # No embedding service available
+        raise Exception("No embedding service available. Install sentence-transformers or configure OpenAI API key.")
+    
+    async def _generate_local_embedding(self, text: str) -> List[float]:
+        """
+        Generate embedding using local sentence-transformers model.
+        FREE, fast, and private!
+        
+        Args:
+            text: Text to embed
+            
+        Returns:
+            Embedding vector (384 dimensions)
+        """
+        try:
+            if not hasattr(self, '_embedding_model'):
+                logger.info("Loading local embedding model (all-MiniLM-L6-v2)...")
+                from sentence_transformers import SentenceTransformer
+                # This model outputs 384-dimensional embeddings (matches EMBEDDING_DIMENSION)
+                self._embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+                logger.info("✅ Local embedding model loaded successfully!")
+            
+            # Truncate text if too long
+            max_length = 500  # sentence-transformers optimal length
+            if len(text) > max_length:
+                text = text[:max_length]
+            
+            # Generate embedding (runs on CPU/GPU locally)
+            embedding = self._embedding_model.encode(text, convert_to_numpy=True)
+            
+            # Convert to list and ensure correct dimension
+            embedding = embedding.tolist()
+            
+            if len(embedding) != EMBEDDING_DIMENSION:
+                logger.warning(f"Embedding dimension mismatch: got {len(embedding)}, expected {EMBEDDING_DIMENSION}")
+                if len(embedding) < EMBEDDING_DIMENSION:
+                    embedding = embedding + [0.0] * (EMBEDDING_DIMENSION - len(embedding))
+                else:
+                    embedding = embedding[:EMBEDDING_DIMENSION]
+            
+            return embedding
+            
+        except Exception as e:
+            logger.error(f"Error generating local embedding: {e}")
+            raise
     
     def _simple_text_search(self, query: str, limit: int) -> List[Dict[str, Any]]:
         """Perform simple text-based search."""

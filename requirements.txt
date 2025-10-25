@@ -18,12 +18,9 @@ openai==1.3.7
 scikit-learn>=1.4.0
 numpy>=1.26.0
 
-# Lightweight embeddings (no heavy PyTorch)
-# Option 1: Skip for now, use fallback (fastest)
-# Option 2: Use OpenAI embeddings (via API, already have openai package)
-# Option 3: sentence-transformers (large, causes timeout)
-
-# For now: Using hash-based fallback (works fine for initial deployment)
+# Embeddings - Local model (FREE!)
+sentence-transformers>=2.2.2  # For semantic vector search
+torch>=2.0.0  # Required by sentence-transformers (CPU version is fine)
 
 # HTTP Client
 httpx==0.25.2
