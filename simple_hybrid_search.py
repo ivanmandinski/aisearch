@@ -204,20 +204,59 @@ class SimpleHybridSearch:
             processed_docs = []
             document_texts = []
             
+            # OPTIMIZATION: Batch embedding generation for better performance
+            logger.info(f"Generating embeddings for {len(chunked_documents)} documents in batches of 50...")
+            
+            # Prepare all texts first
+            doc_text_map = {}
+            for doc in chunked_documents:
+                combined_text = f"{doc['title']} {doc['content']}"
+                document_texts.append(combined_text)
+                doc_text_map[id(doc)] = combined_text
+            
+            # Generate embeddings in batches for efficiency
+            batch_size = 50
+            doc_embeddings = {}
+            
+            for i in range(0, len(chunked_documents), batch_size):
+                batch_docs = chunked_documents[i:i+batch_size]
+                batch_texts = [doc_text_map[id(doc)] for doc in batch_docs]
+                
+                logger.info(f"Processing batch {i//batch_size + 1}/{(len(chunked_documents)-1)//batch_size + 1} ({len(batch_texts)} docs)")
+                
+                try:
+                    # Batch encode using sentence-transformers (MUCH faster than individual!)
+                    if SENTENCE_TRANSFORMERS_AVAILABLE and hasattr(settings, 'openai_api_key') and settings.openai_api_key and settings.openai_api_key != "your_openai_api_key_here":
+                        # Try OpenAI batch API first
+                        try:
+                            embeddings = await self._generate_openai_embedding_batch(batch_texts)
+                            for doc, emb in zip(batch_docs, embeddings):
+                                doc_embeddings[id(doc)] = emb
+                        except Exception as e:
+                            logger.warning(f"OpenAI batch failed: {e}, falling back to local model")
+                            # Fall back to local batch
+                            embeddings = await self._generate_local_embedding_batch(batch_texts)
+                            for doc, emb in zip(batch_docs, embeddings):
+                                doc_embeddings[id(doc)] = emb
+                    elif SENTENCE_TRANSFORMERS_AVAILABLE:
+                        # Use local model with batch
+                        embeddings = await self._generate_local_embedding_batch(batch_texts)
+                        for doc, emb in zip(batch_docs, embeddings):
+                            doc_embeddings[id(doc)] = emb
+                    else:
+                        logger.warning("No embedding service available, using zero vectors")
+                        for doc in batch_docs:
+                            doc_embeddings[id(doc)] = [0.0] * EMBEDDING_DIMENSION
+                            
+                except Exception as e:
+                    logger.error(f"Batch embedding failed: {e}, using zero vectors")
+                    for doc in batch_docs:
+                        doc_embeddings[id(doc)] = [0.0] * EMBEDDING_DIMENSION
+            
             for doc in chunked_documents:
                 try:
-                    # Create combined text for embedding
-                    combined_text = f"{doc['title']} {doc['content']}"
-                    document_texts.append(combined_text)
-                    
-                    # Generate real embeddings (tries local first, then OpenAI)
-                    try:
-                        embedding = await self._generate_openai_embedding(combined_text)
-                        logger.debug(f"Generated embedding for document {doc['id']}")
-                    except Exception as e:
-                        logger.warning(f"Failed to generate embedding for {doc['id']}: {e}, using zero vector")
-                        logger.warning("To enable vector search: pip install sentence-transformers OR set OPENAI_API_KEY")
-                        embedding = [0.0] * EMBEDDING_DIMENSION
+                    # Get pre-generated embedding
+                    embedding = doc_embeddings.get(id(doc), [0.0] * EMBEDDING_DIMENSION)
                     
                     # Prepare sparse vector
                     processed_doc = {
@@ -758,6 +797,89 @@ class SimpleHybridSearch:
             
         except Exception as e:
             logger.error(f"Error generating local embedding: {e}")
+            raise
+    
+    async def _generate_local_embedding_batch(self, texts: List[str]) -> List[List[float]]:
+        """
+        Generate embeddings for multiple texts in batch (MUCH faster!).
+        
+        Args:
+            texts: List of texts to embed
+            
+        Returns:
+            List of embedding vectors (384 dimensions each)
+        """
+        try:
+            if not hasattr(self, '_embedding_model'):
+                logger.info("Loading local embedding model (all-MiniLM-L6-v2)...")
+                from sentence_transformers import SentenceTransformer
+                self._embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+                logger.info("✅ Local embedding model loaded successfully!")
+            
+            # Truncate texts if too long
+            max_length = 500
+            truncated_texts = [text[:max_length] if len(text) > max_length else text for text in texts]
+            
+            # Batch encode (sentence-transformers handles batching efficiently!)
+            embeddings = self._embedding_model.encode(truncated_texts, convert_to_numpy=True, batch_size=32, show_progress_bar=False)
+            
+            # Convert to list and ensure correct dimensions
+            results = []
+            for emb in embeddings:
+                emb_list = emb.tolist()
+                if len(emb_list) != EMBEDDING_DIMENSION:
+                    if len(emb_list) < EMBEDDING_DIMENSION:
+                        emb_list = emb_list + [0.0] * (EMBEDDING_DIMENSION - len(emb_list))
+                    else:
+                        emb_list = emb_list[:EMBEDDING_DIMENSION]
+                results.append(emb_list)
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error generating local embedding batch: {e}")
+            raise
+    
+    async def _generate_openai_embedding_batch(self, texts: List[str]) -> List[List[float]]:
+        """
+        Generate embeddings for multiple texts using OpenAI (batch API).
+        
+        Args:
+            texts: List of texts to embed
+            
+        Returns:
+            List of embedding vectors (1536 dimensions, converted to 384)
+        """
+        try:
+            from openai import AsyncOpenAI
+            
+            client = AsyncOpenAI(api_key=settings.openai_api_key)
+            
+            # Truncate texts if too long
+            max_length = 8000
+            truncated_texts = [text[:max_length] if len(text) > max_length else text for text in texts]
+            
+            response = await client.embeddings.create(
+                model=settings.embed_model or "text-embedding-ada-002",
+                input=truncated_texts
+            )
+            
+            # Convert to list and ensure correct dimensions
+            results = []
+            for item in response.data:
+                embedding = item.embedding
+                # OpenAI returns 1536 dimensions, we need 384
+                if len(embedding) != EMBEDDING_DIMENSION:
+                    if len(embedding) < EMBEDDING_DIMENSION:
+                        embedding = embedding + [0.0] * (EMBEDDING_DIMENSION - len(embedding))
+                    else:
+                        embedding = embedding[:EMBEDDING_DIMENSION]
+                results.append(embedding)
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error generating OpenAI embedding batch: {e}")
             raise
     
     def _simple_text_search(self, query: str, limit: int) -> List[Dict[str, Any]]:
