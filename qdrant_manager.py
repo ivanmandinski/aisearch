@@ -87,8 +87,18 @@ class QdrantManager:
             points = []
             
             for doc in documents:
-                # Create point ID from document ID
-                point_id = f"doc_{doc['id']}"
+                # Create point ID from document ID (must be integer or UUID)
+                # Convert doc['id'] to integer using hash for consistent mapping
+                try:
+                    # If doc['id'] is already a number, use it
+                    if isinstance(doc['id'], (int, float)):
+                        point_id = int(doc['id']) % (10 ** 18)  # Keep in valid range
+                    else:
+                        # Convert string ID to integer using hash
+                        point_id = abs(hash(str(doc['id']))) % (10 ** 18)
+                except:
+                    # Fallback: use simple hash
+                    point_id = abs(hash(str(doc['id']))) % (10 ** 18)
                 
                 # Prepare dense vector (embedding)
                 dense_vector = doc.get('embedding', [0.0] * self.embedding_dimension)
