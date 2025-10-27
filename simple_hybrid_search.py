@@ -300,33 +300,18 @@ class SimpleHybridSearch:
             # Store documents in memory for TF-IDF search
             self.documents = processed_docs
             
-            # Store in Qdrant for hybrid search (using zero vectors for now)
+            # Store in Qdrant for hybrid search (if available)
             try:
-                from qdrant_manager import QdrantManager
-                qdrant = QdrantManager()
-                
-                # Convert to Qdrant format
-                from qdrant_client.models import PointStruct
-                points = []
-                for doc in processed_docs:
-                    point = PointStruct(
-                        id=abs(hash(doc['id'])) % (10 ** 10),  # Convert string ID to int
-                        vector=doc['embedding'],
-                        payload={
-                            'id': doc['id'],
-                            'title': doc['title'],
-                            'content': doc['content'],
-                            'url': doc['url'],
-                            'type': doc['type'],
-                            'date': doc['date'],
-                            'excerpt': doc['excerpt']
-                        }
-                    )
-                    points.append(point)
-                
-                # Upsert to Qdrant
-                qdrant.upsert_documents(points)
-                logger.info(f"Successfully indexed {len(points)} documents in Qdrant")
+                if self.qdrant_manager:
+                    # Create collection first if it doesn't exist
+                    logger.info("Ensuring Qdrant collection exists...")
+                    self.qdrant_manager.create_collection()
+                    
+                    # Upsert documents to Qdrant (converts to proper format internally)
+                    self.qdrant_manager.upsert_documents(processed_docs)
+                    logger.info(f"Successfully indexed {len(processed_docs)} documents in Qdrant")
+                else:
+                    logger.warning("Qdrant not available - skipping vector storage")
             except Exception as e:
                 logger.warning(f"Could not index to Qdrant (using TF-IDF only): {e}")
             
