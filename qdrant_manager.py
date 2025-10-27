@@ -234,7 +234,31 @@ class QdrantManager:
             }
         except Exception as e:
             logger.error(f"Error getting collection info: {e}")
-            return {}
+            # Auto-create collection if missing
+            logger.info(f"Collection '{self.collection_name}' doesn't exist, attempting to create it...")
+            try:
+                if self.create_collection():
+                    logger.info(f"✅ Successfully created collection '{self.collection_name}'")
+                    # Try getting info again
+                    try:
+                        collection_info = self.client.get_collection(self.collection_name)
+                        return {
+                            "name": collection_info.config.params.vectors["dense"].size,
+                            "vectors_count": collection_info.vectors_count,
+                            "indexed_vectors_count": collection_info.indexed_vectors_count,
+                            "points_count": collection_info.points_count,
+                            "segments_count": collection_info.segments_count,
+                            "status": collection_info.status
+                        }
+                    except Exception as retry_e:
+                        logger.error(f"Error getting collection info after creation: {retry_e}")
+                        return {}
+                else:
+                    logger.error(f"Failed to create collection '{self.collection_name}'")
+                    return {}
+            except Exception as create_e:
+                logger.error(f"Error during auto-creation: {create_e}")
+                return {}
     
     def search_by_filters(
         self, 
