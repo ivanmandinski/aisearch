@@ -714,8 +714,12 @@ Return ONLY the queries, one per line, without numbering or bullet points.
             
             # Use vectors_count as the primary metric (total vectors stored)
             # indexed_vectors_count is about HNSW index status, which may be deferred
-            vectors_count = collection_info.get('vectors_count', 0)
-            indexed_vectors_count = collection_info.get('indexed_vectors_count', 0)
+            vectors_count = collection_info.get('vectors_count') or 0
+            indexed_vectors_count = collection_info.get('indexed_vectors_count') or 0
+            
+            # Ensure they are integers (handle None values)
+            vectors_count = int(vectors_count) if vectors_count is not None else 0
+            indexed_vectors_count = int(indexed_vectors_count) if indexed_vectors_count is not None else 0
             
             # If indexed_vectors_count is 0 but we have vectors, it means indexing is deferred
             # Still show the actual vector count

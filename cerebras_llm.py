@@ -503,6 +503,7 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
             # Parse response
             response_text = response.choices[0].message.content.strip()
             logger.info(f"LLM response received ({len(response_text)} chars)")
+            logger.debug(f"Response preview: {response_text[:500]}")
             
             # Extract JSON from response (handle markdown code blocks)
             if "```json" in response_text:
@@ -510,7 +511,31 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
             elif "```" in response_text:
                 response_text = response_text.split("```")[1].split("```")[0].strip()
             
-            ai_scores = json.loads(response_text)
+            # Validate response_text before parsing
+            if not response_text or not response_text.strip():
+                logger.error(f"Empty response_text after extraction. Original: {response.choices[0].message.content[:200]}")
+                raise ValueError("Empty JSON response from LLM")
+            
+            # Try to parse JSON with better error handling
+            try:
+                ai_scores = json.loads(response_text)
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON decode error: {e}")
+                logger.error(f"Response text that failed to parse: {response_text[:500]}")
+                # Try to extract JSON array from the text
+                import re
+                json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+                if json_match:
+                    logger.info("Attempting to extract JSON array from text")
+                    ai_scores = json.loads(json_match.group())
+                else:
+                    raise ValueError(f"Could not parse JSON from LLM response: {e}")
+            
+            # Validate that ai_scores is a list
+            if not isinstance(ai_scores, list):
+                logger.error(f"AI scores is not a list: {type(ai_scores)}, value: {ai_scores}")
+                raise ValueError(f"Expected list of scores, got {type(ai_scores)}")
+            
             logger.info(f"Parsed {len(ai_scores)} AI scores")
             
             # Update results with AI scores
@@ -685,6 +710,7 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
             # Parse response
             response_text = response.choices[0].message.content.strip()
             logger.info(f"LLM response received ({len(response_text)} chars)")
+            logger.debug(f"Response preview: {response_text[:500]}")
             
             # Extract JSON from response (handle markdown code blocks)
             if "```json" in response_text:
@@ -692,7 +718,31 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
             elif "```" in response_text:
                 response_text = response_text.split("```")[1].split("```")[0].strip()
             
-            ai_scores = json.loads(response_text)
+            # Validate response_text before parsing
+            if not response_text or not response_text.strip():
+                logger.error(f"Empty response_text after extraction. Original: {response.choices[0].message.content[:200]}")
+                raise ValueError("Empty JSON response from LLM")
+            
+            # Try to parse JSON with better error handling
+            try:
+                ai_scores = json.loads(response_text)
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON decode error: {e}")
+                logger.error(f"Response text that failed to parse: {response_text[:500]}")
+                # Try to extract JSON array from the text
+                import re
+                json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+                if json_match:
+                    logger.info("Attempting to extract JSON array from text")
+                    ai_scores = json.loads(json_match.group())
+                else:
+                    raise ValueError(f"Could not parse JSON from LLM response: {e}")
+            
+            # Validate that ai_scores is a list
+            if not isinstance(ai_scores, list):
+                logger.error(f"AI scores is not a list: {type(ai_scores)}, value: {ai_scores}")
+                raise ValueError(f"Expected list of scores, got {type(ai_scores)}")
+            
             logger.info(f"Parsed {len(ai_scores)} AI scores")
             
             # Update results with AI scores
