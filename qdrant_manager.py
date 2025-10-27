@@ -224,8 +224,22 @@ class QdrantManager:
         """Get information about the collection."""
         try:
             collection_info = self.client.get_collection(self.collection_name)
+            # Access vectors config properly - it's either a dict or a VectorParams object
+            try:
+                if hasattr(collection_info.config.params.vectors, 'size'):
+                    # It's a VectorParams object
+                    vector_size = collection_info.config.params.vectors.size
+                elif isinstance(collection_info.config.params.vectors, dict):
+                    # It's a dict with "dense" key
+                    vector_size = collection_info.config.params.vectors.get("dense", {}).get("size", 0)
+                else:
+                    vector_size = 0
+            except:
+                vector_size = 0
+            
             return {
-                "name": collection_info.config.params.vectors["dense"].size,
+                "name": self.collection_name,
+                "vector_size": vector_size,
                 "vectors_count": collection_info.vectors_count,
                 "indexed_vectors_count": collection_info.indexed_vectors_count,
                 "points_count": collection_info.points_count,
