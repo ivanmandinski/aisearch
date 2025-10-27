@@ -509,6 +509,100 @@ class SimpleHybridSearch:
                 'total_results': 0
             }
     
+    async def generate_content_based_alternative_queries(self, query: str, search_results: List[Dict[str, Any]], max_alternatives: int = 5) -> List[str]:
+        """
+        Generate alternative queries based ONLY on the actual content in search results.
+        This ensures alternative queries will find relevant content because they're based on what exists.
+        
+        Args:
+            query: Original search query
+            search_results: List of search results with titles, excerpts, content
+            max_alternatives: Maximum number of alternative queries to generate
+            
+        Returns:
+            List of alternative queries based on content analysis
+        """
+        try:
+            if not search_results or len(search_results) == 0:
+                logger.debug("No search results to analyze for alternative queries")
+                return []
+            
+            if not self.llm_client:
+                logger.debug("LLM client not available for content-based alternative query generation")
+                return []
+            
+            # Extract content from top results
+            top_results = search_results[:min(10, len(search_results))]  # Analyze top 10 results
+            
+            # Build context from results
+            results_context = []
+            for i, result in enumerate(top_results, 1):
+                title = result.get('title', '')
+                excerpt = result.get('excerpt', '') or result.get('content', '')[:300]
+                result_type = result.get('type', 'unknown')
+                
+                results_context.append(f"""
+Result {i}:
+- Title: {title}
+- Type: {result_type}
+- Content: {excerpt}
+""")
+            
+            results_text = "\n".join(results_context)
+            
+            # Prompt LLM to generate alternative queries based ONLY on this content
+            prompt = f"""
+You are a search query expert. I searched for: "{query}" and got these results:
+
+{results_text}
+
+Generate 3-5 alternative search queries that users might use to find SIMILAR content to what's shown here.
+
+CRITICAL RULES:
+1. ONLY use terms, topics, and concepts that appear in the search results above
+2. Do NOT suggest queries about content that doesn't exist in the results
+3. Use different phrasings, synonyms, or related terms that appear in these results
+4. Make the queries diverse - cover different aspects shown in the results
+5. Ensure each alternative query would likely find similar or related content
+
+Return ONLY the queries, one per line, without numbering or bullet points.
+"""
+            
+            # Call LLM
+            logger.info(f"Generating content-based alternative queries for: '{query}'")
+            
+            response = self.llm_client.client.chat.completions.create(
+                model=self.llm_client.model,
+                messages=[
+                    {
+                        "role": "system", 
+                        "content": "You are a search query expansion expert that generates alternative queries based ONLY on provided content."
+                    },
+                    {
+                        "role": "user", 
+                        "content": prompt
+                    }
+                ],
+                temperature=0.5,  # Moderate temperature for diversity while staying grounded
+                max_tokens=200
+            )
+            
+            result = response.choices[0].message.content.strip()
+            
+            # Parse the alternative queries
+            alternative_queries = [q.strip() for q in result.split('\n') if q.strip()]
+            
+            # Remove empty queries and limit to max_alternatives
+            alternative_queries = [q for q in alternative_queries if q][:max_alternatives]
+            
+            logger.info(f"Generated {len(alternative_queries)} content-based alternative queries: {alternative_queries}")
+            
+            return alternative_queries
+            
+        except Exception as e:
+            logger.error(f"Error generating content-based alternative queries: {e}")
+            return []  # Return empty list on error, don't break search
+    
     async def _get_embedding(self, text: str) -> List[float]:
         """Get semantic embedding for text using OpenAI API or fallback."""
         try:
@@ -617,10 +711,20 @@ class SimpleHybridSearch:
         """Get search statistics."""
         try:
             collection_info = self.qdrant_manager.get_collection_info()
+            
+            # Use vectors_count as the primary metric (total vectors stored)
+            # indexed_vectors_count is about HNSW index status, which may be deferred
+            vectors_count = collection_info.get('vectors_count', 0)
+            indexed_vectors_count = collection_info.get('indexed_vectors_count', 0)
+            
+            # If indexed_vectors_count is 0 but we have vectors, it means indexing is deferred
+            # Still show the actual vector count
+            vectors_stored = vectors_count if vectors_count > 0 else indexed_vectors_count
+            
             return {
                 'collection_name': self.qdrant_manager.collection_name,
                 'total_documents': collection_info.get('points_count', 0),
-                'indexed_vectors': collection_info.get('indexed_vectors_count', 0),
+                'indexed_vectors': vectors_stored,  # Show actual vectors stored
                 'status': collection_info.get('status', 'unknown'),
                 'tfidf_fitted': self.tfidf_matrix is not None,
                 'document_count': len(self.document_texts)

@@ -348,6 +348,29 @@ async def search(request: SearchRequest, http_request: Request):
         if request.filters:
             results = _apply_filters(results, request.filters)
         
+        # Generate content-based alternative queries (only if we have results)
+        if results and len(results) > 0 and search_system:
+            try:
+                alternative_queries = await search_system.generate_content_based_alternative_queries(
+                    query=request.query,
+                    search_results=results,
+                    max_alternatives=5
+                )
+                
+                # Add content-based alternative queries to query_analysis
+                if query_analysis is not None:
+                    query_analysis['content_based_alternative_queries'] = alternative_queries
+                else:
+                    query_analysis = {
+                        'original_query': request.query,
+                        'content_based_alternative_queries': alternative_queries
+                    }
+                    
+                logger.info(f"Added {len(alternative_queries)} content-based alternative queries to response")
+            except Exception as e:
+                logger.warning(f"Failed to generate content-based alternative queries: {e}")
+                # Continue without alternative queries
+        
         # Handle zero results
         if not results or len(results) == 0:
             logger.warning(f"Zero results for query: {request.query}")
