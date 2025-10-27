@@ -256,8 +256,20 @@ class QdrantManager:
                     # Try getting info again
                     try:
                         collection_info = self.client.get_collection(self.collection_name)
+                        # Use same logic as above for vector_size
+                        try:
+                            if hasattr(collection_info.config.params.vectors, 'size'):
+                                vector_size = collection_info.config.params.vectors.size
+                            elif isinstance(collection_info.config.params.vectors, dict):
+                                vector_size = collection_info.config.params.vectors.get("dense", {}).get("size", 0)
+                            else:
+                                vector_size = 0
+                        except:
+                            vector_size = 0
+                        
                         return {
-                            "name": collection_info.config.params.vectors["dense"].size,
+                            "name": self.collection_name,
+                            "vector_size": vector_size,
                             "vectors_count": collection_info.vectors_count,
                             "indexed_vectors_count": collection_info.indexed_vectors_count,
                             "points_count": collection_info.points_count,
