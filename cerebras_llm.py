@@ -406,7 +406,8 @@ Respond in JSON format:
         query: str, 
         results: List[Dict[str, Any]],
         custom_instructions: str = "",
-        ai_weight: float = 0.7
+        ai_weight: float = 0.7,
+        post_type_priority: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Use LLM to rerank search results based on semantic relevance (async version).
@@ -567,8 +568,17 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
                 
                 reranked_results.append(result)
             
-            # Sort by hybrid score (highest first)
-            reranked_results.sort(key=lambda x: x.get('hybrid_score', 0), reverse=True)
+            # Sort by hybrid score (highest first), then by post type priority within same score
+            if post_type_priority and len(post_type_priority) > 0:
+                priority_map = {post_type: idx for idx, post_type in enumerate(post_type_priority)}
+                def get_priority_value(result):
+                    post_type = result.get('type', '')
+                    return priority_map.get(post_type, 9999)
+                # Sort by: (hybrid_score DESC, priority ASC within same score)
+                reranked_results.sort(key=lambda x: (x.get('hybrid_score', 0), get_priority_value(x)), reverse=True)
+                logger.info(f"Sorted with post type priority: {post_type_priority}")
+            else:
+                reranked_results.sort(key=lambda x: x.get('hybrid_score', 0), reverse=True)
             
             # Calculate stats
             response_time = time.time() - start_time
@@ -583,6 +593,7 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
                 'ai_weight': ai_weight,
                 'tfidf_weight': 1.0 - ai_weight,
                 'custom_instructions_used': bool(custom_instructions),
+                'post_type_priority_applied': bool(post_type_priority),
                 'results_reranked': len(reranked_results)
             }
             
@@ -610,7 +621,8 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
         query: str, 
         results: List[Dict[str, Any]],
         custom_instructions: str = "",
-        ai_weight: float = 0.7
+        ai_weight: float = 0.7,
+        post_type_priority: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Use LLM to rerank search results based on semantic relevance (sync wrapper).
@@ -774,8 +786,17 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
                 
                 reranked_results.append(result)
             
-            # Sort by hybrid score (highest first)
-            reranked_results.sort(key=lambda x: x.get('hybrid_score', 0), reverse=True)
+            # Sort by hybrid score (highest first), then by post type priority within same score
+            if post_type_priority and len(post_type_priority) > 0:
+                priority_map = {post_type: idx for idx, post_type in enumerate(post_type_priority)}
+                def get_priority_value(result):
+                    post_type = result.get('type', '')
+                    return priority_map.get(post_type, 9999)
+                # Sort by: (hybrid_score DESC, priority ASC within same score)
+                reranked_results.sort(key=lambda x: (x.get('hybrid_score', 0), get_priority_value(x)), reverse=True)
+                logger.info(f"Sorted with post type priority: {post_type_priority}")
+            else:
+                reranked_results.sort(key=lambda x: x.get('hybrid_score', 0), reverse=True)
             
             # Calculate stats
             response_time = time.time() - start_time
@@ -790,6 +811,7 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
                 'ai_weight': ai_weight,
                 'tfidf_weight': 1.0 - ai_weight,
                 'custom_instructions_used': bool(custom_instructions),
+                'post_type_priority_applied': bool(post_type_priority),
                 'results_reranked': len(reranked_results)
             }
             

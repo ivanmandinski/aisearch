@@ -330,7 +330,8 @@ class SimpleHybridSearch:
         enable_ai_reranking: bool = True,
         ai_weight: float = 0.7,
         ai_reranking_instructions: str = "",
-        enable_query_expansion: bool = True
+        enable_query_expansion: bool = True,
+        post_type_priority: Optional[List[str]] = None
     ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
         Perform search with optional AI reranking and query expansion.
@@ -343,6 +344,7 @@ class SimpleHybridSearch:
             ai_weight: Weight for AI score (0-1), higher = more AI influence
             ai_reranking_instructions: Custom instructions for AI reranking
             enable_query_expansion: Whether to expand query with synonyms
+            post_type_priority: List of post types in priority order (e.g., ['post', 'page'])
             
         Returns:
             (results, metadata) tuple
@@ -399,7 +401,13 @@ class SimpleHybridSearch:
             
             # Sort combined candidates by score
             all_candidates.sort(key=lambda x: x.get('score', 0), reverse=True)
-            candidates = all_candidates
+            
+            # Apply post type priority if specified
+            if post_type_priority and len(post_type_priority) > 0:
+                logger.info(f"Applying post type priority: {post_type_priority}")
+                candidates = self._apply_post_type_priority(all_candidates, post_type_priority)
+            else:
+                candidates = all_candidates
             
             if not candidates:
                 return [], {'ai_reranking_used': False, 'message': 'No results found', 'total_results': 0}
@@ -419,7 +427,8 @@ class SimpleHybridSearch:
                         query=query,
                         results=top_candidates,
                         custom_instructions=ai_reranking_instructions,
-                        ai_weight=ai_weight
+                        ai_weight=ai_weight,
+                        post_type_priority=post_type_priority
                     )
                     
                     reranked = reranking_result['results']
@@ -736,6 +745,37 @@ Return ONLY the queries, one per line, without numbering or bullet points.
         except Exception as e:
             logger.error(f"Error getting stats: {e}")
             return {}
+    
+    def _apply_post_type_priority(self, results: List[Dict[str, Any]], priority: List[str]) -> List[Dict[str, Any]]:
+        """
+        Apply post type priority to search results.
+        Results with higher priority post types will appear first within each score tier.
+        
+        Args:
+            results: List of search results
+            priority: List of post types in priority order (e.g., ['post', 'page'])
+            
+        Returns:
+            Results sorted by priority then score
+        """
+        if not results or not priority:
+            return results
+        
+        # Create priority map (lower index = higher priority)
+        priority_map = {post_type: idx for idx, post_type in enumerate(priority)}
+        
+        # Get priority value for each result
+        def get_priority(result):
+            post_type = result.get('type', '')
+            return priority_map.get(post_type, 9999)  # Unknown types go last
+        
+        # Sort by priority first, then by score (descending)
+        sorted_results = sorted(
+            results,
+            key=lambda x: (get_priority(x), -x.get('score', 0))
+        )
+        
+        return sorted_results
     
     def _tfidf_search(self, query: str, limit: int, offset: int = 0) -> List[Dict[str, Any]]:
         """Perform TF-IDF based search with offset support."""

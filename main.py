@@ -96,6 +96,8 @@ class SearchRequest(BaseModel):
     ai_reranking_instructions: str = Field(default="", description="Custom instructions for AI reranking")
     # Strict AI Answer Mode
     strict_ai_answer_mode: bool = Field(default=True, description="Whether to use strict mode for AI answers (only use search results)")
+    # Post Type Priority
+    post_type_priority: Optional[List[str]] = Field(default=None, description="Post types in priority order (e.g., ['post', 'page'])")
 
 
 class SearchResponse(BaseModel):
@@ -330,7 +332,8 @@ async def search(request: SearchRequest, http_request: Request):
                     limit=request.limit,
                     enable_ai_reranking=request.enable_ai_reranking,
                     ai_weight=request.ai_weight,
-                    ai_reranking_instructions=request.ai_reranking_instructions
+                    ai_reranking_instructions=request.ai_reranking_instructions,
+                    post_type_priority=request.post_type_priority
                 )
                 answer = None
         else:
@@ -340,7 +343,8 @@ async def search(request: SearchRequest, http_request: Request):
                 limit=request.limit,
                 enable_ai_reranking=request.enable_ai_reranking,
                 ai_weight=request.ai_weight,
-                ai_reranking_instructions=request.ai_reranking_instructions
+                ai_reranking_instructions=request.ai_reranking_instructions,
+                post_type_priority=request.post_type_priority
             )
             answer = None
         

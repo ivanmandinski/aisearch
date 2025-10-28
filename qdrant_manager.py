@@ -81,6 +81,52 @@ class QdrantManager:
             logger.error(f"Error deleting collection: {e}")
             return False
     
+    def clear_collection(self) -> bool:
+        """Clear all points from the collection without deleting it."""
+        try:
+            # Delete all points using scroll and delete
+            limit = 100
+            offset = None
+            deleted_count = 0
+            
+            while True:
+                # Scroll to get point IDs
+                scroll_result = self.client.scroll(
+                    collection_name=self.collection_name,
+                    limit=limit,
+                    offset=offset,
+                    with_payload=False,
+                    with_vectors=False
+                )
+                
+                points = scroll_result[0]
+                if not points:
+                    break
+                
+                # Extract point IDs
+                point_ids = [point.id for point in points]
+                
+                # Delete these points
+                self.client.delete(
+                    collection_name=self.collection_name,
+                    points_selector=point_ids
+                )
+                
+                deleted_count += len(point_ids)
+                logger.info(f"Deleted {deleted_count} points so far...")
+                
+                # Update offset for next iteration
+                offset = scroll_result[1]
+                if not offset:
+                    break
+            
+            logger.info(f"Cleared {deleted_count} points from collection '{self.collection_name}'")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error clearing collection: {e}")
+            return False
+    
     def upsert_documents(self, documents: List[Dict[str, Any]]) -> bool:
         """Insert or update documents in the collection."""
         try:
