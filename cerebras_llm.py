@@ -137,41 +137,56 @@ Content: {result['excerpt'] or result.get('content', '')[:500]}...
             # Use custom instructions if provided, otherwise use default
             custom_instr = custom_instructions.strip() if custom_instructions else ""
             
+            # Define strict_warning for both branches
+            strict_warning = "STRICT MODE ENABLED: " if self.strict_mode else ""
+            
             if custom_instr:
                 # Use ONLY custom instructions when provided
                 base_instructions = f"""
-Based ONLY on the following search results from the indexed content, answer the user's question.
+STRICT MODE: You MUST answer using ONLY the provided search results.
 
-CRITICAL CONSTRAINTS:
-- You MUST ONLY use information from the provided search results
-- Do NOT use any external knowledge or general information
-- If the search results don't contain enough information, explicitly state this limitation
-- Always cite the specific source number when referencing information
-- This is STRICT MODE: You are forbidden from adding any information not present in the search results
+CRITICAL RULES - DO NOT VIOLATE:
+- ONLY use information that appears in the search results
+- Do NOT add ANY external knowledge, assumptions, or context
+- Do NOT infer what the user might be looking for
+- Do NOT add details that don't appear in the results
+- Simply state what IS in the results, nothing more
 
-IMPORTANT: Follow these custom instructions EXACTLY:
+BAD EXAMPLE:
+❌ "There is no information about James Walsh being a musician"
+   → WRONG! Don't add "musician" - that's not in search results!
+
+GOOD EXAMPLE:
+✅ "The search results show James Walsh is the CEO of SCS Engineers."
+
+CUSTOM INSTRUCTIONS (follow these EXACTLY):
 {custom_instr}
 """
             else:
                 # Use default instructions only when no custom instructions are provided
-                strict_warning = "STRICT MODE ENABLED: " if self.strict_mode else ""
                 base_instructions = f"""
-Based ONLY on the following search results from the indexed content, provide a comprehensive answer to the user's question.
+STRICT MODE: You MUST answer using ONLY the provided search results.
 
-{strict_warning}CRITICAL CONSTRAINTS:
-- You MUST ONLY use information from the provided search results
-- Do NOT use any external knowledge or general information
-- If the search results don't contain enough information, explicitly state this limitation
-- Always cite the specific source number when referencing information
-- You are forbidden from adding any information not present in the search results
+CRITICAL RULES - DO NOT VIOLATE:
+- ONLY use information that appears in the search results below
+- Do NOT add ANY external knowledge, assumptions, or context
+- Do NOT infer what the user might be looking for
+- Do NOT add details that don't appear in the results
+- Simply state what IS in the results, nothing more
 
-Instructions:
-1. Provide a clear, well-structured answer based ONLY on the search results
-2. Cite specific sources (Source 1, Source 2, etc.) when making claims
-3. If the search results don't fully answer the question, acknowledge this limitation
-4. Use a helpful and informative tone
-5. Keep the answer concise but comprehensive (2-3 paragraphs max)
-6. Never add information not present in the search results
+HOW TO ANSWER:
+1. Read each source carefully
+2. Extract ONLY the facts mentioned in the sources
+3. State those facts clearly
+4. Cite the source (Source 1, Source 2, etc.)
+5. If information isn't in the results, say "The search results do not include information about [topic]"
+
+BAD EXAMPLE (DON'T DO THIS):
+❌ "There is no information about James Walsh being a musician"
+   → WRONG! Don't add "musician" - that's not in search results!
+
+GOOD EXAMPLE (DO THIS):
+✅ "The search results show James Walsh is the CEO of SCS Engineers (Source 1). The results do not include information about his personal interests or hobbies."
 """
             
             prompt = f"""{base_instructions}
@@ -184,9 +199,24 @@ Search Results:
 Answer:
 """
             
-            system_message = "You are a helpful research assistant that provides accurate, well-sourced answers based ONLY on the provided search results. You must never use external knowledge or information not present in the search results."
+            system_message = """You are a research assistant that answers questions using ONLY the provided search results. You MUST NOT use any external knowledge, assumptions, or information not explicitly present in the search results."""
+            
             if self.strict_mode:
-                system_message += " STRICT MODE: You are absolutely forbidden from adding any information not explicitly present in the search results."
+                system_message += """ 
+
+CRITICAL STRICT MODE RULES:
+1. Do NOT add ANY context that is not in the search results
+2. Do NOT infer what the user might be looking for
+3. Do NOT add details like "musician, singer, songwriter" unless they appear in the results
+4. If results don't mention something, do NOT mention it either
+5. Simply state what IS in the results, nothing more
+
+Example of what NOT to do:
+❌ "There is no information about James Walsh being a musician" 
+   → Don't add "musician" - that's not in the search results!
+
+✅ "Based on the search results, James Walsh is the CEO of SCS Engineers."
+   → Only uses what's actually in the results"""
             
             response = self.client.chat.completions.create(
                 model=self.model,

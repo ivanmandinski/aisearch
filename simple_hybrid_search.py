@@ -360,6 +360,41 @@ class SimpleHybridSearch:
             
             logger.info(f"Search request: query='{query}', offset={offset}, limit={limit}")
             
+            # Step 0.5: Detect query intent
+            detected_intent = self.detect_query_intent(query)
+            logger.info(f"🎯 Query intent detected: {detected_intent}")
+            
+            # Generate intent-based instructions and combine with user's custom instructions
+            intent_instructions = self._generate_intent_based_instructions(query, detected_intent)
+            if intent_instructions and ai_reranking_instructions:
+                # Combine user's custom instructions with intent-based instructions
+                combined_instructions = f"{ai_reranking_instructions}\n\n{intent_instructions}"
+                ai_reranking_instructions = combined_instructions
+                logger.info(f"Combined user instructions with intent-based instructions")
+            elif intent_instructions:
+                # Use intent-based instructions only
+                ai_reranking_instructions = intent_instructions
+                logger.info(f"Using intent-based instructions: {detected_intent}")
+            
+            # Apply intent-based post type priority
+            intent_based_priority = None
+            if detected_intent == 'person_name':
+                intent_based_priority = ['scs-professionals', 'page', 'post', 'attachment']
+                logger.info(f"Person search: Prioritizing SCS Professionals")
+            elif detected_intent == 'service':
+                intent_based_priority = ['page', 'scs-services', 'post']
+                logger.info(f"Service search: Prioritizing service pages")
+            elif detected_intent == 'howto':
+                intent_based_priority = ['post', 'page', 'scs-professionals']
+                logger.info(f"How-to search: Prioritizing articles")
+            # Note: 'navigational' and 'transactional' use default priority
+            # 'general' uses user's custom priority
+            
+            # Use intent-based priority if no user priority specified
+            if not post_type_priority and intent_based_priority:
+                post_type_priority = intent_based_priority
+                logger.info(f"Using intent-based priority: {post_type_priority}")
+            
             # Step 0: Query expansion (if enabled)
             search_queries = [query]
             if enable_query_expansion:
@@ -384,20 +419,34 @@ class SimpleHybridSearch:
             seen_ids = set()
             
             for search_query in search_queries:
+                query_candidates = []
+                
                 # If we have TF-IDF fitted, use it for search
                 if self.tfidf_matrix is not None and len(self.documents) > 0:
                     logger.info(f"Using TF-IDF search for '{search_query}' (getting {search_limit} candidates)")
                     query_candidates = self._tfidf_search(search_query, search_limit, 0)  # Always start from 0 for initial search
+                    
+                    # If TF-IDF returns poor results (low scores), add simple text search as backup
+                    if len(query_candidates) < 3 or (query_candidates and query_candidates[0]['score'] < 0.1):
+                        logger.info(f"TF-IDF returned poor results, adding simple text search fallback for '{search_query}'")
+                        simple_results = self._simple_text_search(search_query, search_limit // 2)
+                        query_candidates.extend(simple_results)
                 else:
                     # Fallback to simple text search
                     logger.info(f"Using simple text search for '{search_query}' (getting {search_limit} candidates)")
                     query_candidates = self._simple_text_search(search_query, search_limit)
                 
-                # Add unique candidates
+                # Add unique candidates (avoid duplicates)
                 for candidate in query_candidates:
                     if candidate['id'] not in seen_ids:
                         all_candidates.append(candidate)
                         seen_ids.add(candidate['id'])
+                    else:
+                        # If duplicate, keep the one with higher score
+                        existing = next((c for c in all_candidates if c['id'] == candidate['id']), None)
+                        if existing and candidate['score'] > existing['score']:
+                            all_candidates.remove(existing)
+                            all_candidates.append(candidate)
             
             # Sort combined candidates by score
             all_candidates.sort(key=lambda x: x.get('score', 0), reverse=True)
@@ -777,6 +826,152 @@ Return ONLY the queries, one per line, without numbering or bullet points.
         
         return sorted_results
     
+    def detect_query_intent(self, query: str) -> str:
+        """
+        Detect what the user is actually looking for based on query patterns.
+        
+        Args:
+            query: Search query
+            
+        Returns:
+            Intent type: 'person_name', 'service', 'howto', 'navigational', 'transactional', or 'general'
+        """
+        import re
+        query_stripped = query.strip()
+        words = query_stripped.split()
+        
+        # 1. PERSON NAME DETECTION (e.g., "James Walsh", "Sarah Johnson")
+        # Pattern: Exactly 2 words, both capitalized, minimum 3 chars each
+        if len(words) == 2:
+            first, last = words
+            if (first and last and 
+                first[0].isupper() and last[0].isupper() and
+                len(first) >= 3 and len(last) >= 3):
+                logger.info(f"Detected person_name intent for: '{query}'")
+                return 'person_name'
+        
+        query_lower = query.strip().lower()
+        
+        # 2. SERVICE QUERY DETECTION
+        # Pattern: Contains service-related keywords
+        service_keywords = ['service', 'services', 'solutions', 'consulting', 
+                           'support', 'implementation', 'solutions for', 'solutions in']
+        if any(keyword in query_lower for keyword in service_keywords):
+            logger.info(f"Detected service intent for: '{query}'")
+            return 'service'
+        
+        # 3. HOW-TO / INFORMATIONAL QUERY
+        # Pattern: Starts with question words
+        question_patterns = [r'^(how|what|why|when|where)\b', 
+                            r'^(how to)', 
+                            r'^(what is)', 
+                            r'^(why do)',
+                            r'^(can |should |will )']
+        for pattern in question_patterns:
+            if re.match(pattern, query_lower):
+                logger.info(f"Detected howto intent for: '{query}'")
+                return 'howto'
+        
+        # 4. NAVIGATIONAL QUERY (User looking for specific page)
+        navigational_keywords = ['contact', 'about us', 'team', 'careers', 
+                                'locations', 'contact us', 'office', 'address',
+                                'login', 'account', 'sign in']
+        if any(keyword in query_lower for keyword in navigational_keywords):
+            logger.info(f"Detected navigational intent for: '{query}'")
+            return 'navigational'
+        
+        # 5. TRANSACTIONAL QUERY (User wants to do something)
+        transactional_keywords = ['buy', 'download', 'purchase', 'order', 
+                                 'get', 'find', 'hire', 'request', 'apply',
+                                 'register', 'subscribe']
+        if any(keyword in query_lower for keyword in transactional_keywords):
+            logger.info(f"Detected transactional intent for: '{query}'")
+            return 'transactional'
+        
+        # Default: General search
+        logger.info(f"Detected general intent for: '{query}'")
+        return 'general'
+    
+    def _generate_intent_based_instructions(self, query: str, intent: str) -> str:
+        """
+        Generate AI instructions based on detected query intent.
+        
+        Args:
+            query: Search query
+            intent: Detected intent ('person_name', 'service', etc.)
+            
+        Returns:
+            AI instructions string
+        """
+        if intent == 'person_name':
+            return f"""User is searching for a specific person: "{query}".
+
+PRIORITY:
+1. SCS Professionals profiles where the person's full name appears in the title
+2. Biographical content about this specific person
+3. Press releases, announcements, or news about this person
+
+RULES:
+- Only show results about THIS specific person
+- Boost exact name matches in titles
+- Do NOT include general articles unless they're specifically about this person
+- If no professional profile exists, show news/articles about them"""
+        
+        elif intent == 'service':
+            return f"""User is looking for services or solutions related to: "{query}".
+
+PRIORITY:
+1. Service description pages that match the query
+2. Solution offerings and capabilities
+3. Service-specific landing pages
+
+RULES:
+- Prioritize actionable, practical service information
+- Show what services are available
+- Include capabilities and expertise areas
+- Avoid general informational content unless highly relevant"""
+        
+        elif intent == 'howto':
+            return f"""User needs actionable guidance on: "{query}".
+
+PRIORITY:
+1. Step-by-step guides and tutorials
+2. Instructional content with actionable steps
+3. "How to" articles with practical advice
+
+RULES:
+- Prioritize content with numbered steps or clear instructions
+- Look for practical, actionable advice
+- Skip theoretical content unless no practical guides exist
+- Focus on "how to do X" rather than "what is X" """
+        
+        elif intent == 'navigational':
+            return f"""User is looking for a specific page: "{query}".
+
+PRIORITY:
+1. Exact match for the page they're looking for
+2. Related pages that might serve the same purpose
+
+RULES:
+- Match the navigation intent exactly
+- Trust AI ranking (don't override with post type priority)
+- Exact title matches should be #1"""
+        
+        elif intent == 'transactional':
+            return f"""User wants to perform an action related to: "{query}".
+
+PRIORITY:
+1. Pages where they can complete the action
+2. Service request pages
+3. Download/application pages
+
+RULES:
+- Show pages where user can DO something (not just read about it)
+- Prioritize actionable pages"""
+        
+        else:
+            return ""  # General intent - use default behavior
+    
     def _tfidf_search(self, query: str, limit: int, offset: int = 0) -> List[Dict[str, Any]]:
         """Perform TF-IDF based search with offset support."""
         try:
@@ -809,6 +1004,21 @@ Return ONLY the queries, one per line, without numbering or bullet points.
                 if score > 0:  # Only include results with positive similarity
                     logger.debug(f"Including result {i+1}: doc_idx={doc_idx}, score={score:.4f}")
                     doc = self.documents[doc_idx]
+                    
+                    # FIELD BOOSTING: Titles are much more important than content
+                    # Check if query matches in title/excerpt (higher relevance)
+                    query_lower = query.lower()
+                    title_lower = doc['title'].lower()
+                    excerpt_lower = (doc.get('excerpt', '') or '').lower()
+                    
+                    # Boost score for exact title matches
+                    if query_lower in title_lower:
+                        score *= 1.5  # 50% boost for title matches
+                        logger.debug(f"Title match boost: {score:.4f}")
+                    elif query_lower in excerpt_lower:
+                        score *= 1.2  # 20% boost for excerpt matches
+                        logger.debug(f"Excerpt match boost: {score:.4f}")
+                    
                     result = {
                         'id': doc['id'],
                         'title': doc['title'],
@@ -1016,25 +1226,43 @@ Return ONLY the queries, one per line, without numbering or bullet points.
             raise
     
     def _simple_text_search(self, query: str, limit: int) -> List[Dict[str, Any]]:
-        """Perform simple text-based search."""
+        """Perform simple text-based search with partial word matching."""
         try:
             query_lower = query.lower()
+            query_words = query_lower.split()
             results = []
             
             for doc in self.documents:
-                # Simple text matching
-                title_score = query_lower in doc['title'].lower()
-                content_score = query_lower in doc['content'].lower()
-                excerpt_score = query_lower in doc['excerpt'].lower()
+                doc_title_lower = doc['title'].lower()
+                doc_content_lower = doc['content'].lower()
+                doc_excerpt_lower = doc['excerpt'].lower()
+                
+                # Exact match (highest priority)
+                exact_title_match = query_lower in doc_title_lower
+                exact_content_match = query_lower in doc_content_lower
+                exact_excerpt_match = query_lower in doc_excerpt_lower
+                
+                # Partial word match (handles "James Wals" → "James Walsh")
+                partial_title_match = any(word in doc_title_lower for word in query_words if len(word) >= 4)
+                partial_content_match = any(word in doc_content_lower for word in query_words if len(word) >= 4)
+                partial_excerpt_match = any(word in doc_excerpt_lower for word in query_words if len(word) >= 4)
                 
                 # Calculate simple score
                 score = 0
-                if title_score:
+                if exact_title_match:
+                    score += 5  # Exact match in title is very relevant
+                elif partial_title_match:
+                    score += 2  # Partial match in title
+                    
+                if exact_excerpt_match:
                     score += 3
-                if excerpt_score:
-                    score += 2
-                if content_score:
+                elif partial_excerpt_match:
                     score += 1
+                    
+                if exact_content_match:
+                    score += 2
+                elif partial_content_match:
+                    score += 0.5
                 
                 if score > 0:
                     result = {
@@ -1047,8 +1275,8 @@ Return ONLY the queries, one per line, without numbering or bullet points.
                         'author': doc.get('author', ''),
                         'categories': doc.get('categories', []),
                         'tags': doc.get('tags', []),
-                        'score': float(score),
-                        'relevance': 'high' if score >= 3 else 'medium' if score >= 2 else 'low'
+                        'score': float(score) / 10.0,  # Normalize to 0-1 range
+                        'relevance': 'high' if score >= 5 else 'medium' if score >= 2 else 'low'
                     }
                     results.append(result)
             
