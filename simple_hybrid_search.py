@@ -184,14 +184,32 @@ class SimpleHybridSearch:
         except Exception as e:
             logger.error(f"Error initializing sample data: {e}")
     
-    async def index_documents(self, documents: List[Dict[str, Any]]) -> bool:
-        """Index documents for search with automatic chunking for long content."""
+    async def index_documents(self, documents: List[Dict[str, Any]], clear_existing: bool = True) -> bool:
+        """Index documents for search with automatic chunking for long content.
+        
+        Args:
+            documents: List of documents to index
+            clear_existing: If True, clear existing collection before indexing (default: True)
+        """
         try:
             logger.info(f"Indexing {len(documents)} documents...")
             
             if not documents:
                 logger.warning("No documents to index")
                 return False
+            
+            # Clear existing collection if requested (prevents duplicates)
+            if clear_existing:
+                logger.info("Clearing existing collection to prevent duplicates...")
+                try:
+                    cleared = self.qdrant_manager.clear_collection()
+                    if cleared:
+                        logger.info("✅ Successfully cleared existing collection")
+                    else:
+                        logger.warning("⚠️ Could not clear collection, proceeding with index anyway")
+                except Exception as clear_error:
+                    logger.warning(f"⚠️ Error clearing collection: {clear_error}, proceeding with index anyway")
+                    # Continue indexing even if clear fails
             
             # Chunk long documents
             from content_chunker import ContentChunker

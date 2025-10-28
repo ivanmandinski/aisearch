@@ -146,18 +146,32 @@ Content: {result['excerpt'] or result.get('content', '')[:500]}...
 STRICT MODE: You MUST answer using ONLY the provided search results.
 
 CRITICAL RULES - DO NOT VIOLATE:
-- ONLY use information that appears in the search results
-- Do NOT add ANY external knowledge, assumptions, or context
-- Do NOT infer what the user might be looking for
-- Do NOT add details that don't appear in the results
-- Simply state what IS in the results, nothing more
+1. ONLY use information that appears in the search results
+2. Do NOT add ANY external knowledge, assumptions, or context
+3. Do NOT infer what the user might be looking for
+4. Do NOT add details that don't appear in the results
+5. If information isn't there, explicitly state "The search results do not include information about [topic]"
 
-BAD EXAMPLE:
-❌ "There is no information about James Walsh being a musician"
-   → WRONG! Don't add "musician" - that's not in search results!
+HOW TO ANSWER - STEP BY STEP:
+1. Read all source titles and excerpts
+2. Extract ONLY facts that are explicitly stated
+3. If you see conflicting information, mention both sources
+4. Cite your sources clearly (Source 1, Source 2)
+5. If you can't answer from results, say "Based on the available search results, I cannot find specific information about [topic]"
 
-GOOD EXAMPLE:
-✅ "The search results show James Walsh is the CEO of SCS Engineers."
+BAD EXAMPLES (DON'T DO THIS):
+❌ "James Walsh is a musician, singer, and songwriter"
+   → WRONG! You added "musician" - that's not in search results!
+❌ "The project is located in California"
+   → WRONG! You inferred location from company info - not in results!
+❌ "SCS provides comprehensive environmental consulting services"
+   → TOO VAGUE! Be specific - what does 'comprehensive' mean?
+
+GOOD EXAMPLES (DO THIS):
+✅ "The search results show James Walsh is the CEO of SCS Engineers (Source 1). The results do not include information about his personal interests or hobbies."
+✅ "Based on Source 1, the project involved soil remediation. Source 2 mentions the project lasted 18 months. No specific location is mentioned in these results."
+
+CONTEXT: User is likely looking for professional information about SCS Engineers. Common queries: staff members, services, projects, environmental solutions.
 
 CUSTOM INSTRUCTIONS (follow these EXACTLY):
 {custom_instr}
@@ -168,25 +182,33 @@ CUSTOM INSTRUCTIONS (follow these EXACTLY):
 STRICT MODE: You MUST answer using ONLY the provided search results.
 
 CRITICAL RULES - DO NOT VIOLATE:
-- ONLY use information that appears in the search results below
-- Do NOT add ANY external knowledge, assumptions, or context
-- Do NOT infer what the user might be looking for
-- Do NOT add details that don't appear in the results
-- Simply state what IS in the results, nothing more
+1. ONLY use information that appears in the search results below
+2. Do NOT add ANY external knowledge, assumptions, or context
+3. Do NOT infer what the user might be looking for
+4. Do NOT add details that don't appear in the results
+5. If information isn't there, explicitly state "The search results do not include information about [topic]"
 
-HOW TO ANSWER:
-1. Read each source carefully
-2. Extract ONLY the facts mentioned in the sources
-3. State those facts clearly
-4. Cite the source (Source 1, Source 2, etc.)
-5. If information isn't in the results, say "The search results do not include information about [topic]"
+HOW TO ANSWER - STEP BY STEP:
+1. Read all source titles and excerpts
+2. Extract ONLY facts that are explicitly stated
+3. If you see conflicting information, mention both sources
+4. Cite your sources clearly (Source 1, Source 2)
+5. If you can't answer from results, say "Based on the available search results, I cannot find specific information about [topic]"
 
-BAD EXAMPLE (DON'T DO THIS):
-❌ "There is no information about James Walsh being a musician"
-   → WRONG! Don't add "musician" - that's not in search results!
+BAD EXAMPLES (DON'T DO THIS):
+❌ "James Walsh is a musician, singer, and songwriter"
+   → WRONG! You added "musician" - that's not in search results!
+❌ "The project is located in California"
+   → WRONG! You inferred location from company info - not in results!
+❌ "SCS provides comprehensive environmental consulting services"
+   → TOO VAGUE! Be specific - what does 'comprehensive' mean?
 
-GOOD EXAMPLE (DO THIS):
+GOOD EXAMPLES (DO THIS):
 ✅ "The search results show James Walsh is the CEO of SCS Engineers (Source 1). The results do not include information about his personal interests or hobbies."
+✅ "Based on Source 1, the project involved soil remediation. Source 2 mentions the project lasted 18 months. No specific location is mentioned in these results."
+✅ "According to Source 1, SCS Engineers provides hazardous waste management services. Source 2 adds that they also offer environmental compliance consulting."
+
+CONTEXT: User is likely looking for professional information about SCS Engineers. Common queries: staff members, services, projects, environmental solutions. Avoid making this sound like generic web content.
 """
             
             prompt = f"""{base_instructions}
@@ -467,11 +489,23 @@ Respond in JSON format:
             results_text = self._format_results_for_reranking(results)
             
             # Build system prompt with custom instructions
-            system_prompt = """You are an expert search relevance analyzer. 
-Your job is to score how well each search result matches the user's query based on semantic relevance, user intent, and content quality."""
+            system_prompt = """You are an expert search relevance analyzer for SCS Engineers, a professional environmental consulting firm.
+
+BUSINESS CONTEXT:
+- SCS Engineers provides environmental, engineering, and consulting services
+- Main services include: waste management, environmental compliance, sustainability consulting
+- Post types you'll see:
+  * "scs-professionals": Staff member profiles with expertise
+  * "scs-services": Service descriptions and capabilities
+  * "page": General pages (About, Services, Projects, Contact)
+  * "post": Blog articles, case studies, news
+
+YOUR JOB:
+Score search results based on how well they match user queries for this business context.
+Consider business priorities: professional expertise, service offerings, and user intent."""
 
             if custom_instructions:
-                system_prompt += f"\n\n🎯 CUSTOM RANKING CRITERIA (HIGH PRIORITY):\n{custom_instructions}"
+                system_prompt += f"\n\n🎯 CUSTOM RANKING CRITERIA (HIGHEST PRIORITY):\n{custom_instructions}"
             
             # Build user prompt
             user_prompt = f"""
@@ -484,12 +518,21 @@ Analyze these search results for the query: "{query}"
 1. **Semantic Relevance** (40 points)
    - Does the content match the query's semantic meaning?
    - Is it exactly what the user is looking for?
+   
+   EXAMPLES:
+   ✅ Query: "hazardous waste management" → Result: "Hazardous Waste Management Services" (Score: 95 - exact match)
+   ✅ Query: "toxic site remediation" → Result: "Environmental Remediation Services" (Score: 85 - conceptually related)
+   ❌ Query: "water treatment" → Result: "Solid Waste Management" (Score: 25 - not relevant)
 
 2. **User Intent** (30 points)
    - Does it address what the user wants to accomplish?
-   - For "how to" queries: Does it provide actionable steps?
-   - For "what is" queries: Does it provide clear explanations?
-   - For purchase intent: Does it offer products/services?
+   
+   INTENT SCORING:
+   • PERSON NAME ("James Walsh"): scs-professionals profile → Score: 95, Article mentioning person → Score: 75, Generic → Score: 30
+   • SERVICE ("hazardous waste"): scs-services page → Score: 95, Case study → Score: 80, Blog post → Score: 50
+   • HOW-TO ("how to"): Step-by-step guide → Score: 90, Case study → Score: 70, General page → Score: 40
+   • NAVIGATIONAL ("contact"): Exact page → Score: 100, Related page → Score: 65, Article → Score: 25
+   • TRANSACTIONAL ("request quote"): Action page → Score: 95, Mentions service → Score: 60, Article → Score: 35
 
 3. **Content Quality** (20 points)
    - Based on title and excerpt, does it seem comprehensive?
@@ -685,11 +728,23 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
             results_text = self._format_results_for_reranking(results)
             
             # Build system prompt with custom instructions
-            system_prompt = """You are an expert search relevance analyzer. 
-Your job is to score how well each search result matches the user's query based on semantic relevance, user intent, and content quality."""
+            system_prompt = """You are an expert search relevance analyzer for SCS Engineers, a professional environmental consulting firm.
+
+BUSINESS CONTEXT:
+- SCS Engineers provides environmental, engineering, and consulting services
+- Main services include: waste management, environmental compliance, sustainability consulting
+- Post types you'll see:
+  * "scs-professionals": Staff member profiles with expertise
+  * "scs-services": Service descriptions and capabilities
+  * "page": General pages (About, Services, Projects, Contact)
+  * "post": Blog articles, case studies, news
+
+YOUR JOB:
+Score search results based on how well they match user queries for this business context.
+Consider business priorities: professional expertise, service offerings, and user intent."""
 
             if custom_instructions:
-                system_prompt += f"\n\n🎯 CUSTOM RANKING CRITERIA (HIGH PRIORITY):\n{custom_instructions}"
+                system_prompt += f"\n\n🎯 CUSTOM RANKING CRITERIA (HIGHEST PRIORITY):\n{custom_instructions}"
             
             # Build user prompt
             user_prompt = f"""
@@ -702,12 +757,21 @@ Analyze these search results for the query: "{query}"
 1. **Semantic Relevance** (40 points)
    - Does the content match the query's semantic meaning?
    - Is it exactly what the user is looking for?
+   
+   EXAMPLES:
+   ✅ Query: "hazardous waste management" → Result: "Hazardous Waste Management Services" (Score: 95 - exact match)
+   ✅ Query: "toxic site remediation" → Result: "Environmental Remediation Services" (Score: 85 - conceptually related)
+   ❌ Query: "water treatment" → Result: "Solid Waste Management" (Score: 25 - not relevant)
 
 2. **User Intent** (30 points)
    - Does it address what the user wants to accomplish?
-   - For "how to" queries: Does it provide actionable steps?
-   - For "what is" queries: Does it provide clear explanations?
-   - For purchase intent: Does it offer products/services?
+   
+   INTENT SCORING:
+   • PERSON NAME ("James Walsh"): scs-professionals profile → Score: 95, Article mentioning person → Score: 75, Generic → Score: 30
+   • SERVICE ("hazardous waste"): scs-services page → Score: 95, Case study → Score: 80, Blog post → Score: 50
+   • HOW-TO ("how to"): Step-by-step guide → Score: 90, Case study → Score: 70, General page → Score: 40
+   • NAVIGATIONAL ("contact"): Exact page → Score: 100, Related page → Score: 65, Article → Score: 25
+   • TRANSACTIONAL ("request quote"): Action page → Score: 95, Mentions service → Score: 60, Article → Score: 35
 
 3. **Content Quality** (20 points)
    - Based on title and excerpt, does it seem comprehensive?
