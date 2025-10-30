@@ -106,7 +106,8 @@ environmental consulting services
 environmental regulations
 """
             
-            response = self.llm_client.client.chat.completions.create(
+            # Use async client to avoid blocking the event loop
+            response = await self.llm_client.async_client.chat.completions.create(
                 model=self.llm_client.model,
                 messages=[
                     {"role": "system", "content": "You are a helpful search suggestion assistant."},

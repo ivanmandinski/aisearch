@@ -288,17 +288,11 @@ class WordPressContentFetcher:
                             if source_url:
                                 return source_url
                 
-                # Method 2: Try to construct image URL from WordPress site
-                base_url = self.base_url.replace('/wp-json/wp/v2', '')
-                potential_urls = [
-                    f"{base_url}/wp-content/uploads/{featured_media_id}.jpg",
-                    f"{base_url}/wp-content/uploads/{featured_media_id}.png",
-                    f"{base_url}/wp-content/uploads/{featured_media_id}.jpeg",
-                    f"{base_url}/wp-content/uploads/{featured_media_id}.webp"
-                ]
-                
-                # Return the first potential URL - frontend will handle onerror
-                return potential_urls[0]
+                # Method 2: Try to fetch media URL from WordPress REST API
+                # Don't construct URLs manually - WordPress stores images in date-based subdirectories
+                # Instead, return empty string and let frontend fetch via REST API using media ID
+                # The frontend will use the featured_media ID to fetch the real URL
+                return ""
             
             # Method 3: Check for direct image fields in the item
             direct_image_fields = ['featured_image', 'thumbnail', 'image', 'featured_image_url', 'post_thumbnail']

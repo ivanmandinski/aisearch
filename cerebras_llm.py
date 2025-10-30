@@ -2,6 +2,7 @@
 Cerebras LLM integration for query rewriting and answering.
 """
 import logging
+import re
 from typing import List, Dict, Any, Optional
 import openai
 from openai import OpenAI, AsyncOpenAI
@@ -150,26 +151,34 @@ CRITICAL RULES - DO NOT VIOLATE:
 2. Do NOT add ANY external knowledge, assumptions, or context
 3. Do NOT infer what the user might be looking for
 4. Do NOT add details that don't appear in the results
-5. If information isn't there, explicitly state "The search results do not include information about [topic]"
+5. NEVER mention topics, terms, or concepts that don't appear in the search results - even to say they're not there
+6. ONLY state what IS in the results - do NOT mention what is NOT in the results
 
 HOW TO ANSWER - STEP BY STEP:
 1. Read all source titles and excerpts
 2. Extract ONLY facts that are explicitly stated
 3. If you see conflicting information, mention both sources
 4. Cite your sources clearly (Source 1, Source 2)
-5. If you can't answer from results, say "Based on the available search results, I cannot find specific information about [topic]"
+5. If information isn't in the results, simply omit it - DO NOT mention it
 
 BAD EXAMPLES (DON'T DO THIS):
 ❌ "James Walsh is a musician, singer, and songwriter"
    → WRONG! You added "musician" - that's not in search results!
+❌ "I cannot find information about James Walsh being a musician or singer"
+   → WRONG! Don't mention "musician" or "singer" at all - they're not in the results!
+❌ "The search results do not include information about biography, musician, singer, or Starsailor"
+   → WRONG! These terms are not in the results, so don't mention them!
 ❌ "The project is located in California"
    → WRONG! You inferred location from company info - not in results!
 ❌ "SCS provides comprehensive environmental consulting services"
    → TOO VAGUE! Be specific - what does 'comprehensive' mean?
 
 GOOD EXAMPLES (DO THIS):
-✅ "The search results show James Walsh is the CEO of SCS Engineers (Source 1). The results do not include information about his personal interests or hobbies."
-✅ "Based on Source 1, the project involved soil remediation. Source 2 mentions the project lasted 18 months. No specific location is mentioned in these results."
+✅ "The search results show James Walsh is the CEO of SCS Engineers (Source 1). He was elected to the Environmental Research and Education Foundation board (Source 1)."
+✅ "Based on Source 1, the project involved soil remediation. Source 2 mentions the project lasted 18 months."
+✅ "According to Source 1, SCS Engineers provides hazardous waste management services. Source 2 adds that they also offer environmental compliance consulting."
+
+REMEMBER: If it's not in the search results, it doesn't exist. Don't mention it at all.
 
 CONTEXT: User is likely looking for professional information about SCS Engineers. Common queries: staff members, services, projects, environmental solutions.
 
@@ -186,27 +195,34 @@ CRITICAL RULES - DO NOT VIOLATE:
 2. Do NOT add ANY external knowledge, assumptions, or context
 3. Do NOT infer what the user might be looking for
 4. Do NOT add details that don't appear in the results
-5. If information isn't there, explicitly state "The search results do not include information about [topic]"
+5. NEVER mention topics, terms, or concepts that don't appear in the search results - even to say they're not there
+6. ONLY state what IS in the results - do NOT mention what is NOT in the results
 
 HOW TO ANSWER - STEP BY STEP:
 1. Read all source titles and excerpts
 2. Extract ONLY facts that are explicitly stated
 3. If you see conflicting information, mention both sources
 4. Cite your sources clearly (Source 1, Source 2)
-5. If you can't answer from results, say "Based on the available search results, I cannot find specific information about [topic]"
+5. If information isn't in the results, simply omit it - DO NOT mention it
 
 BAD EXAMPLES (DON'T DO THIS):
 ❌ "James Walsh is a musician, singer, and songwriter"
    → WRONG! You added "musician" - that's not in search results!
+❌ "I cannot find information about James Walsh being a musician or singer"
+   → WRONG! Don't mention "musician" or "singer" at all - they're not in the results!
+❌ "The search results do not include information about biography, musician, singer, or Starsailor"
+   → WRONG! These terms are not in the results, so don't mention them!
 ❌ "The project is located in California"
    → WRONG! You inferred location from company info - not in results!
 ❌ "SCS provides comprehensive environmental consulting services"
    → TOO VAGUE! Be specific - what does 'comprehensive' mean?
 
 GOOD EXAMPLES (DO THIS):
-✅ "The search results show James Walsh is the CEO of SCS Engineers (Source 1). The results do not include information about his personal interests or hobbies."
-✅ "Based on Source 1, the project involved soil remediation. Source 2 mentions the project lasted 18 months. No specific location is mentioned in these results."
+✅ "The search results show James Walsh is the CEO of SCS Engineers (Source 1). He was elected to the Environmental Research and Education Foundation board (Source 1)."
+✅ "Based on Source 1, the project involved soil remediation. Source 2 mentions the project lasted 18 months."
 ✅ "According to Source 1, SCS Engineers provides hazardous waste management services. Source 2 adds that they also offer environmental compliance consulting."
+
+REMEMBER: If it's not in the search results, it doesn't exist. Don't mention it at all.
 
 CONTEXT: User is likely looking for professional information about SCS Engineers. Common queries: staff members, services, projects, environmental solutions. Avoid making this sound like generic web content.
 """
@@ -230,12 +246,17 @@ CRITICAL STRICT MODE RULES:
 1. Do NOT add ANY context that is not in the search results
 2. Do NOT infer what the user might be looking for
 3. Do NOT add details like "musician, singer, songwriter" unless they appear in the results
-4. If results don't mention something, do NOT mention it either
-5. Simply state what IS in the results, nothing more
+4. If results don't mention something, do NOT mention it either - even to say it's not there
+5. NEVER mention topics, terms, or concepts from external knowledge - only use what's in the search results
+6. Simply state what IS in the results, nothing more, nothing less
 
 Example of what NOT to do:
 ❌ "There is no information about James Walsh being a musician" 
    → Don't add "musician" - that's not in the search results!
+❌ "I cannot find information about James Walsh's biography as a musician or singer"
+   → Don't mention "musician", "singer", or "biography" - these aren't in the results!
+❌ "The search results do not mention James Walsh in relation to musician, singer, Starsailor, or biography"
+   → Don't mention any of these terms - they're not in the results!
 
 ✅ "Based on the search results, James Walsh is the CEO of SCS Engineers."
    → Only uses what's actually in the results"""
@@ -263,15 +284,46 @@ Example of what NOT to do:
             return "I encountered an error while generating an answer. Please try again."
     
     def _validate_answer_context(self, answer: str, search_results: List[Dict[str, Any]]) -> str:
-        """Validate that the answer is based on search results and add disclaimer if needed."""
+        """Validate that the answer is based on search results and filter out irrelevant terms."""
         try:
             # Extract key terms from search results
             search_content = []
-            for result in search_results[:3]:  # Check top 3 results
+            for result in search_results[:5]:  # Check top 5 results
                 content = (result.get('excerpt', '') or result.get('content', '') or result.get('title', '')).lower()
                 search_content.append(content)
             
             combined_content = ' '.join(search_content)
+            
+            # Extract words from search results (for validation)
+            search_words = set(re.findall(r'\b\w{4,}\b', combined_content.lower()))  # Words 4+ chars
+            
+            # Check for phrases that mention terms not in search results
+            # Common problematic patterns
+            problematic_patterns = [
+                r'cannot find.*?about.*?(?:musician|singer|songwriter|biography|starsailor)',
+                r'do not.*?include.*?information.*?about.*?(?:musician|singer|songwriter|biography|starsailor)',
+                r'no information.*?about.*?(?:musician|singer|songwriter|biography|starsailor)',
+                r'does not mention.*?(?:musician|singer|songwriter|biography|starsailor)',
+                r'not.*?in.*?the.*?results.*?(?:musician|singer|songwriter|biography|starsailor)',
+            ]
+            
+            # Check if answer contains problematic patterns
+            answer_lower = answer.lower()
+            for pattern in problematic_patterns:
+                matches = re.finditer(pattern, answer_lower, re.IGNORECASE)
+                for match in matches:
+                    # Found a problematic mention - remove that sentence
+                    sentence_start = max(0, answer.rfind('.', 0, match.start()) + 1)
+                    sentence_end = answer.find('.', match.end())
+                    if sentence_end == -1:
+                        sentence_end = len(answer)
+                    else:
+                        sentence_end += 1
+                    
+                    # Remove the problematic sentence
+                    answer = answer[:sentence_start].strip() + ' ' + answer[sentence_end:].strip()
+                    answer = re.sub(r'\s+', ' ', answer).strip()
+                    logger.warning(f"Removed sentence mentioning terms not in search results: {match.group()}")
             
             # Check if answer contains source references
             has_source_refs = any(f"Source {i}" in answer for i in range(1, 6))

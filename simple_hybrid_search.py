@@ -65,19 +65,10 @@ class SimpleHybridSearch:
     """Simplified hybrid search implementation."""
     
     def __init__(self):
-        # Initialize Sentence Transformers for real semantic embeddings
-        if SENTENCE_TRANSFORMERS_AVAILABLE and SentenceTransformer is not None:
-            try:
-                logger.info("Initializing Sentence Transformer embedding model...")
-                # Use lightweight, fast model (80MB, 500+ sentences/sec)
-                self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-                logger.info("Sentence Transformer model loaded successfully (all-MiniLM-L6-v2)")
-            except Exception as e:
-                logger.error(f"Failed to initialize embedding model: {e}")
-                self.embedding_model = None
-        else:
-            logger.warning("Sentence Transformers not available - using hash-based fallback")
-            self.embedding_model = None
+        # Embedding model will be lazily loaded on first use to reduce startup time
+        # Use _embedding_model as private attribute, accessed via property
+        self._embedding_model = None
+        self._embedding_model_loaded = False
         
         # Initialize Qdrant if available
         if QDRANT_AVAILABLE and QdrantManager is not None:
@@ -116,6 +107,37 @@ class SimpleHybridSearch:
         
         # Initialize with sample data for testing (fallback)
         self._initialize_with_sample_data()
+    
+    def _get_embedding_model(self):
+        """
+        Lazy-load the Sentence Transformer embedding model.
+        This ensures we only load the model when actually needed, reducing startup time.
+        """
+        if self._embedding_model_loaded:
+            return self._embedding_model
+        
+        # Mark as attempted to avoid repeated failures
+        self._embedding_model_loaded = True
+        
+        if SENTENCE_TRANSFORMERS_AVAILABLE and SentenceTransformer is not None:
+            try:
+                logger.info("Loading Sentence Transformer embedding model (lazy load)...")
+                # Use lightweight, fast model (80MB, 500+ sentences/sec)
+                self._embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+                logger.info("Sentence Transformer model loaded successfully (all-MiniLM-L6-v2)")
+            except Exception as e:
+                logger.error(f"Failed to initialize embedding model: {e}")
+                self._embedding_model = None
+        else:
+            logger.debug("Sentence Transformers not available - will use hash-based fallback")
+            self._embedding_model = None
+        
+        return self._embedding_model
+    
+    @property
+    def embedding_model(self):
+        """Property accessor for embedding model (lazy-loaded)."""
+        return self._get_embedding_model()
     
     def _initialize_with_sample_data(self):
         """Initialize with sample data for testing."""
@@ -644,10 +666,10 @@ CRITICAL RULES:
 Return ONLY the queries, one per line, without numbering or bullet points.
 """
             
-            # Call LLM
+            # Call LLM asynchronously to avoid blocking the event loop
             logger.info(f"Generating content-based alternative queries for: '{query}'")
             
-            response = self.llm_client.client.chat.completions.create(
+            response = await self.llm_client.async_client.chat.completions.create(
                 model=self.llm_client.model,
                 messages=[
                     {
@@ -1129,12 +1151,11 @@ RULES:
             Embedding vector (384 dimensions)
         """
         try:
-            if not hasattr(self, '_embedding_model'):
-                logger.info("Loading local embedding model (all-MiniLM-L6-v2)...")
-                from sentence_transformers import SentenceTransformer
-                # This model outputs 384-dimensional embeddings (matches EMBEDDING_DIMENSION)
-                self._embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-                logger.info("✅ Local embedding model loaded successfully!")
+            # Use lazy-loaded embedding model (single instance)
+            embedding_model = self.embedding_model
+            if embedding_model is None:
+                logger.warning("Embedding model not available, using hash-based fallback")
+                return self._hash_based_embedding(text)
             
             # Truncate text if too long
             max_length = 500  # sentence-transformers optimal length
@@ -1142,7 +1163,7 @@ RULES:
                 text = text[:max_length]
             
             # Generate embedding (runs on CPU/GPU locally)
-            embedding = self._embedding_model.encode(text, convert_to_numpy=True)
+            embedding = embedding_model.encode(text, convert_to_numpy=True)
             
             # Convert to list and ensure correct dimension
             embedding = embedding.tolist()
@@ -1171,18 +1192,18 @@ RULES:
             List of embedding vectors (384 dimensions each)
         """
         try:
-            if not hasattr(self, '_embedding_model'):
-                logger.info("Loading local embedding model (all-MiniLM-L6-v2)...")
-                from sentence_transformers import SentenceTransformer
-                self._embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-                logger.info("✅ Local embedding model loaded successfully!")
+            # Use lazy-loaded embedding model (single instance)
+            embedding_model = self.embedding_model
+            if embedding_model is None:
+                logger.warning("Embedding model not available, using hash-based fallback")
+                return [self._hash_based_embedding(text) for text in texts]
             
             # Truncate texts if too long
             max_length = 500
             truncated_texts = [text[:max_length] if len(text) > max_length else text for text in texts]
             
             # Batch encode (sentence-transformers handles batching efficiently!)
-            embeddings = self._embedding_model.encode(truncated_texts, convert_to_numpy=True, batch_size=32, show_progress_bar=False)
+            embeddings = embedding_model.encode(truncated_texts, convert_to_numpy=True, batch_size=32, show_progress_bar=False)
             
             # Convert to list and ensure correct dimensions
             results = []

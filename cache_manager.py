@@ -368,3 +368,5 @@ def get_search_cache_manager() -> SearchCacheManager:
     """Get the global search cache manager."""
     return search_cache_manager
 
+
+
