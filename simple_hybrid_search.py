@@ -421,6 +421,9 @@ class SimpleHybridSearch:
             if detected_intent == 'person_name':
                 intent_based_priority = ['scs-professionals', 'page', 'post', 'attachment']
                 logger.info(f"Person search: Prioritizing SCS Professionals")
+            elif detected_intent == 'executive_role':
+                intent_based_priority = ['scs-professionals', 'page', 'post', 'attachment']
+                logger.info(f"Executive role search: Prioritizing SCS Professionals")
             elif detected_intent == 'service':
                 intent_based_priority = ['page', 'scs-services', 'post']
                 logger.info(f"Service search: Prioritizing service pages")
@@ -525,6 +528,10 @@ class SimpleHybridSearch:
                     
                     # Ensure total_results is included in metadata
                     metadata['total_results'] = len(candidates)
+                    
+                    # Add query intent info for admin tooltips
+                    metadata['query_intent'] = detected_intent
+                    metadata['intent_instructions'] = intent_instructions if intent_instructions else None
                     
                     # Apply offset and return top N after reranking
                     paginated_results = reranked[offset:offset + limit]
@@ -892,7 +899,20 @@ Return ONLY the queries, one per line, without numbering or bullet points.
         
         query_lower = query.strip().lower()
         
-        # 2. SERVICE QUERY DETECTION
+        # 2. EXECUTIVE/ROLE QUERY DETECTION (e.g., "Who is the CEO?", "Who is the president?")
+        # Pattern: Queries asking about specific roles or positions
+        executive_role_patterns = [
+            r'who is the (ceo|president|executive|chairman|director|chief|leader|head)',
+            r'who is (ceo|president|executive|chairman|director|chief|leader|head)',
+            r'(ceo|president|executive|chairman|director|chief|leader|head) (of|at)',
+            r'current (ceo|president|executive|chairman|director|chief|leader|head)',
+        ]
+        for pattern in executive_role_patterns:
+            if re.search(pattern, query_lower):
+                logger.info(f"Detected executive_role intent for: '{query}'")
+                return 'executive_role'
+        
+        # 3. SERVICE QUERY DETECTION
         # Pattern: Contains service-related keywords
         service_keywords = ['service', 'services', 'solutions', 'consulting', 
                            'support', 'implementation', 'solutions for', 'solutions in']
@@ -956,6 +976,21 @@ RULES:
 - Boost exact name matches in titles
 - Do NOT include general articles unless they're specifically about this person
 - If no professional profile exists, show news/articles about them"""
+        
+        elif intent == 'executive_role':
+            return f"""User is asking about a specific executive role or position: "{query}".
+
+PRIORITY:
+1. SCS Professionals profiles where the person holds the specific role mentioned (CEO, President, etc.)
+2. Press releases or announcements naming the person in that role
+3. Professional profiles that mention the role in title or content
+
+RULES:
+- Prioritize profiles where the person is CURRENTLY in that role
+- Look for role keywords: CEO, President, Executive, Chief, Director, Leader
+- Boost results where role appears in title (e.g., "Doug Doerr, CEO")
+- For "Who is the CEO?", the person currently holding that title should rank #1
+- Recent announcements about role changes are highly relevant"""
         
         elif intent == 'service':
             return f"""User is looking for services or solutions related to: "{query}".

@@ -581,10 +581,20 @@ Analyze these search results for the query: "{query}"
    
    INTENT SCORING:
    • PERSON NAME ("James Walsh"): scs-professionals profile → Score: 95, Article mentioning person → Score: 75, Generic → Score: 30
+   • EXECUTIVE ROLE ("Who is the CEO?"): scs-professionals profile with role in title → Score: 100, Profile mentioning role → Score: 95, Press release naming CEO → Score: 90, Article mentioning CEO → Score: 70, Generic → Score: 30
    • SERVICE ("hazardous waste"): scs-services page → Score: 95, Case study → Score: 80, Blog post → Score: 50
    • HOW-TO ("how to"): Step-by-step guide → Score: 90, Case study → Score: 70, General page → Score: 40
    • NAVIGATIONAL ("contact"): Exact page → Score: 100, Related page → Score: 65, Article → Score: 25
    • TRANSACTIONAL ("request quote"): Action page → Score: 95, Mentions service → Score: 60, Article → Score: 35
+
+   SPECIAL CASE - CEO/PRESIDENT QUERIES:
+   When query asks "Who is the CEO?" or similar:
+   - Professional profile of CURRENT CEO with role in title → Score: 100 (CRITICAL!)
+   - Professional profile mentioning CEO role → Score: 95
+   - Press release announcing CEO → Score: 90
+   - Article mentioning CEO → Score: 70
+   - Other professionals → Score: 30-40
+   - Blog posts about leadership → Score: 40-50
 
 3. **Content Quality** (20 points)
    - Based on title and excerpt, does it seem comprehensive?
@@ -683,27 +693,60 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
                     result['hybrid_score'] = hybrid_score
                     result['score'] = hybrid_score  # Update main score for sorting
                     
+                    # Add ranking explanation for admin users
+                    result['ranking_explanation'] = {
+                        'tfidf_score': round(tfidf_score, 4),
+                        'ai_score': round(ai_score, 4),
+                        'ai_score_raw': ai_result['ai_score'],  # 0-100 scale
+                        'hybrid_score': round(hybrid_score, 4),
+                        'tfidf_weight': round(tfidf_weight, 2),
+                        'ai_weight': round(ai_weight, 2),
+                        'ai_reason': ai_result.get('reason', ''),
+                        'post_type': result.get('type', 'unknown'),
+                        'position_before_priority': None,  # Will be set after sorting
+                    }
+                    
                     logger.debug(f"Result '{result['title'][:50]}': TF-IDF={tfidf_score:.3f}, AI={ai_score:.3f}, Hybrid={hybrid_score:.3f}")
                 else:
                     # Fallback if AI didn't score this result
                     result['ai_score'] = result.get('score', 0.0)
                     result['hybrid_score'] = result.get('score', 0.0)
                     result['ai_reason'] = 'No AI scoring available'
+                    result['ranking_explanation'] = {
+                        'tfidf_score': round(result.get('score', 0.0), 4),
+                        'ai_score': None,
+                        'ai_score_raw': None,
+                        'hybrid_score': round(result.get('score', 0.0), 4),
+                        'tfidf_weight': 1.0,
+                        'ai_weight': 0.0,
+                        'ai_reason': 'No AI scoring available',
+                        'post_type': result.get('type', 'unknown'),
+                        'position_before_priority': None,
+                    }
                     logger.warning(f"No AI score for result ID: {result['id']}")
                 
                 reranked_results.append(result)
             
             # Sort by hybrid score (highest first), then by post type priority within same score
+            priority_map = {}
             if post_type_priority and len(post_type_priority) > 0:
                 priority_map = {post_type: idx for idx, post_type in enumerate(post_type_priority)}
                 def get_priority_value(result):
                     post_type = result.get('type', '')
                     return priority_map.get(post_type, 9999)
-                # Sort by: (hybrid_score DESC, priority ASC within same score)
-                reranked_results.sort(key=lambda x: (x.get('hybrid_score', 0), get_priority_value(x)), reverse=True)
+                # Sort by: hybrid_score DESC, then priority ASC (lower idx = higher priority)
+                # Use negative priority to make lower idx sort first when reverse=True
+                reranked_results.sort(key=lambda x: (x.get('hybrid_score', 0), -get_priority_value(x)), reverse=True)
                 logger.info(f"Sorted with post type priority: {post_type_priority}")
             else:
                 reranked_results.sort(key=lambda x: x.get('hybrid_score', 0), reverse=True)
+            
+            # Add position and priority info to ranking explanation after sorting
+            for idx, result in enumerate(reranked_results):
+                if 'ranking_explanation' in result:
+                    result['ranking_explanation']['final_position'] = idx + 1
+                    result['ranking_explanation']['post_type_priority'] = priority_map.get(result.get('type', ''), 9999)
+                    result['ranking_explanation']['priority_order'] = post_type_priority if post_type_priority else []
             
             # Calculate stats
             response_time = time.time() - start_time
@@ -820,10 +863,20 @@ Analyze these search results for the query: "{query}"
    
    INTENT SCORING:
    • PERSON NAME ("James Walsh"): scs-professionals profile → Score: 95, Article mentioning person → Score: 75, Generic → Score: 30
+   • EXECUTIVE ROLE ("Who is the CEO?"): scs-professionals profile with role in title → Score: 100, Profile mentioning role → Score: 95, Press release naming CEO → Score: 90, Article mentioning CEO → Score: 70, Generic → Score: 30
    • SERVICE ("hazardous waste"): scs-services page → Score: 95, Case study → Score: 80, Blog post → Score: 50
    • HOW-TO ("how to"): Step-by-step guide → Score: 90, Case study → Score: 70, General page → Score: 40
    • NAVIGATIONAL ("contact"): Exact page → Score: 100, Related page → Score: 65, Article → Score: 25
    • TRANSACTIONAL ("request quote"): Action page → Score: 95, Mentions service → Score: 60, Article → Score: 35
+
+   SPECIAL CASE - CEO/PRESIDENT QUERIES:
+   When query asks "Who is the CEO?" or similar:
+   - Professional profile of CURRENT CEO with role in title → Score: 100 (CRITICAL!)
+   - Professional profile mentioning CEO role → Score: 95
+   - Press release announcing CEO → Score: 90
+   - Article mentioning CEO → Score: 70
+   - Other professionals → Score: 30-40
+   - Blog posts about leadership → Score: 40-50
 
 3. **Content Quality** (20 points)
    - Based on title and excerpt, does it seem comprehensive?
@@ -922,27 +975,60 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
                     result['hybrid_score'] = hybrid_score
                     result['score'] = hybrid_score  # Update main score for sorting
                     
+                    # Add ranking explanation for admin users
+                    result['ranking_explanation'] = {
+                        'tfidf_score': round(tfidf_score, 4),
+                        'ai_score': round(ai_score, 4),
+                        'ai_score_raw': ai_result['ai_score'],  # 0-100 scale
+                        'hybrid_score': round(hybrid_score, 4),
+                        'tfidf_weight': round(tfidf_weight, 2),
+                        'ai_weight': round(ai_weight, 2),
+                        'ai_reason': ai_result.get('reason', ''),
+                        'post_type': result.get('type', 'unknown'),
+                        'position_before_priority': None,  # Will be set after sorting
+                    }
+                    
                     logger.debug(f"Result '{result['title'][:50]}': TF-IDF={tfidf_score:.3f}, AI={ai_score:.3f}, Hybrid={hybrid_score:.3f}")
                 else:
                     # Fallback if AI didn't score this result
                     result['ai_score'] = result.get('score', 0.0)
                     result['hybrid_score'] = result.get('score', 0.0)
                     result['ai_reason'] = 'No AI scoring available'
+                    result['ranking_explanation'] = {
+                        'tfidf_score': round(result.get('score', 0.0), 4),
+                        'ai_score': None,
+                        'ai_score_raw': None,
+                        'hybrid_score': round(result.get('score', 0.0), 4),
+                        'tfidf_weight': 1.0,
+                        'ai_weight': 0.0,
+                        'ai_reason': 'No AI scoring available',
+                        'post_type': result.get('type', 'unknown'),
+                        'position_before_priority': None,
+                    }
                     logger.warning(f"No AI score for result ID: {result['id']}")
                 
                 reranked_results.append(result)
             
             # Sort by hybrid score (highest first), then by post type priority within same score
+            priority_map = {}
             if post_type_priority and len(post_type_priority) > 0:
                 priority_map = {post_type: idx for idx, post_type in enumerate(post_type_priority)}
                 def get_priority_value(result):
                     post_type = result.get('type', '')
                     return priority_map.get(post_type, 9999)
-                # Sort by: (hybrid_score DESC, priority ASC within same score)
-                reranked_results.sort(key=lambda x: (x.get('hybrid_score', 0), get_priority_value(x)), reverse=True)
+                # Sort by: hybrid_score DESC, then priority ASC (lower idx = higher priority)
+                # Use negative priority to make lower idx sort first when reverse=True
+                reranked_results.sort(key=lambda x: (x.get('hybrid_score', 0), -get_priority_value(x)), reverse=True)
                 logger.info(f"Sorted with post type priority: {post_type_priority}")
             else:
                 reranked_results.sort(key=lambda x: x.get('hybrid_score', 0), reverse=True)
+            
+            # Add position and priority info to ranking explanation after sorting
+            for idx, result in enumerate(reranked_results):
+                if 'ranking_explanation' in result:
+                    result['ranking_explanation']['final_position'] = idx + 1
+                    result['ranking_explanation']['post_type_priority'] = priority_map.get(result.get('type', ''), 9999)
+                    result['ranking_explanation']['priority_order'] = post_type_priority if post_type_priority else []
             
             # Calculate stats
             response_time = time.time() - start_time
