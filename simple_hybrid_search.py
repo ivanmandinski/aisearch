@@ -535,14 +535,45 @@ class SimpleHybridSearch:
                     
                     # Apply offset and return top N after reranking
                     paginated_results = reranked[offset:offset + limit]
+                    
+                    # Ensure ranking_explanation positions are updated for paginated results
+                    for idx, result in enumerate(paginated_results):
+                        if 'ranking_explanation' in result:
+                            result['ranking_explanation']['final_position'] = offset + idx + 1
+                    
                     logger.info(f"✅ AI reranking successful, returning {len(paginated_results)} results (offset={offset}, limit={limit})")
                     logger.info(f"🔍 AI RERANKING DEBUG: total_candidates={len(candidates)}, reranked_count={len(reranked)}, paginated_count={len(paginated_results)}")
+                    
+                    # Debug: Log if ranking_explanation exists
+                    if paginated_results and 'ranking_explanation' in paginated_results[0]:
+                        logger.info(f"✅ First paginated result has ranking_explanation: {paginated_results[0]['ranking_explanation']}")
+                    else:
+                        logger.warning(f"⚠️ First paginated result missing ranking_explanation!")
+                    
                     return paginated_results, metadata
                     
                 except Exception as e:
                     logger.error(f"AI reranking failed: {e}, falling back to TF-IDF results")
                     # Fall through to return TF-IDF results with proper pagination
                     paginated_results = candidates[offset:offset + limit]
+                    
+                    # Add ranking explanation for fallback results
+                    for idx, result in enumerate(paginated_results):
+                        result['ranking_explanation'] = {
+                            'tfidf_score': round(result.get('score', 0.0), 4),
+                            'ai_score': None,
+                            'ai_score_raw': None,
+                            'hybrid_score': round(result.get('score', 0.0), 4),
+                            'tfidf_weight': 1.0,
+                            'ai_weight': 0.0,
+                            'ai_reason': f'AI reranking failed: {str(e)}',
+                            'post_type': result.get('type', 'unknown'),
+                            'position_before_priority': None,
+                            'final_position': idx + 1,
+                            'post_type_priority': 9999,
+                            'priority_order': post_type_priority if post_type_priority else []
+                        }
+                    
                     logger.info(f"🔍 TF-IDF FALLBACK DEBUG: total_candidates={len(candidates)}, offset={offset}, limit={limit}, paginated_count={len(paginated_results)}")
                     return paginated_results, {
                         'ai_reranking_used': False,
@@ -557,6 +588,24 @@ class SimpleHybridSearch:
             
             # No AI reranking, return TF-IDF results with offset
             paginated_results = candidates[offset:offset + limit]
+            
+            # Add ranking explanation even when AI reranking is disabled
+            for idx, result in enumerate(paginated_results):
+                result['ranking_explanation'] = {
+                    'tfidf_score': round(result.get('score', 0.0), 4),
+                    'ai_score': None,
+                    'ai_score_raw': None,
+                    'hybrid_score': round(result.get('score', 0.0), 4),
+                    'tfidf_weight': 1.0,
+                    'ai_weight': 0.0,
+                    'ai_reason': 'AI reranking disabled',
+                    'post_type': result.get('type', 'unknown'),
+                    'position_before_priority': None,
+                    'final_position': idx + 1,
+                    'post_type_priority': 9999,
+                    'priority_order': post_type_priority if post_type_priority else []
+                }
+            
             logger.info(f"🔍 TF-IDF DEBUG: total_candidates={len(candidates)}, offset={offset}, limit={limit}, paginated_count={len(paginated_results)}")
             return paginated_results, {
                 'ai_reranking_used': False,
