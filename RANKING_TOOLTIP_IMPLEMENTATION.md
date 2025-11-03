@@ -542,3 +542,4 @@ function renderResults(results, container) {
 4. Export ranking data for analysis
 5. Add visual score bars/graphs
 
+

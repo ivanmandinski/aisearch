@@ -583,8 +583,12 @@ class SimpleHybridSearch:
             else:
                 if not enable_ai_reranking:
                     logger.info("AI reranking disabled, using TF-IDF results")
+                    disable_reason = "AI reranking disabled in settings"
                 elif not self.llm_client:
                     logger.warning("LLM client not available, using TF-IDF results")
+                    disable_reason = "LLM client not initialized (check Cerebras API key)"
+                else:
+                    disable_reason = "AI reranking unavailable"
             
             # No AI reranking, return TF-IDF results with offset
             paginated_results = candidates[offset:offset + limit]
@@ -598,7 +602,7 @@ class SimpleHybridSearch:
                     'hybrid_score': round(result.get('score', 0.0), 4),
                     'tfidf_weight': 1.0,
                     'ai_weight': 0.0,
-                    'ai_reason': 'AI reranking disabled',
+                    'ai_reason': disable_reason,
                     'post_type': result.get('type', 'unknown'),
                     'position_before_priority': None,
                     'final_position': idx + 1,
@@ -609,7 +613,7 @@ class SimpleHybridSearch:
             logger.info(f"🔍 TF-IDF DEBUG: total_candidates={len(candidates)}, offset={offset}, limit={limit}, paginated_count={len(paginated_results)}")
             return paginated_results, {
                 'ai_reranking_used': False,
-                'reason': 'AI reranking disabled or unavailable',
+                'reason': disable_reason,
                 'total_results': len(candidates)
             }
             
