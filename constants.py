@@ -55,6 +55,9 @@ MAX_AI_WEIGHT = 1.0
 # Reranking limits
 MIN_RERANK_CANDIDATES = 20
 RERANK_BUFFER_SIZE = 10  # Extra results to fetch for reranking
+MAX_RERANK_CANDIDATES = 50  # Maximum results to send to LLM (optimization - was 200)
+RERANK_CACHE_TTL = 3600  # Cache reranking results for 1 hour
+TFIDF_HIGH_CONFIDENCE_THRESHOLD = 0.85  # Skip reranking if top TF-IDF score is very high
 
 # AI scoring
 AI_SCORE_MIN = 0

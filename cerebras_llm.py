@@ -1067,22 +1067,16 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
             }
     
     def _format_results_for_reranking(self, results: List[Dict[str, Any]]) -> str:
-        """Format results as text for LLM."""
+        """Format results as text for LLM (optimized - shorter format)."""
         formatted = []
         for i, result in enumerate(results, 1):
             excerpt = result.get('excerpt', '')
-            if len(excerpt) > 300:
-                excerpt = excerpt[:300] + '...'
+            # OPTIMIZATION: Reduce excerpt length for faster processing
+            if len(excerpt) > 200:  # Reduced from 300
+                excerpt = excerpt[:200] + '...'
             
-            formatted.append(f"""
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Result {i} (ID: {result['id']}):
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📌 Title: {result['title']}
-🏷️  Type: {result.get('type', 'unknown')}
-📝 Excerpt: {excerpt}
-⭐ TF-IDF Score: {result.get('score', 0):.3f}
-""")
+            # OPTIMIZATION: Shorter format to reduce token usage
+            formatted.append(f"{i}. ID:{result['id']} | {result['title']} ({result.get('type', 'unknown')}) | Score:{result.get('score', 0):.3f}\n   {excerpt}")
         return "\n".join(formatted)
     
     def test_connection(self) -> bool:

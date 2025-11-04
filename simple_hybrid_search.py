@@ -22,6 +22,8 @@ from constants import (
     MAX_SEARCH_RESULTS_FOR_ANSWER,
     MIN_RERANK_CANDIDATES,
     RERANK_BUFFER_SIZE,
+    MAX_RERANK_CANDIDATES,
+    TFIDF_HIGH_CONFIDENCE_THRESHOLD,
     MAX_RESULT_LIMIT,
     RELEVANCE_HIGH_THRESHOLD,
     RELEVANCE_MEDIUM_THRESHOLD,
@@ -69,6 +71,10 @@ class SimpleHybridSearch:
         # Use _embedding_model as private attribute, accessed via property
         self._embedding_model = None
         self._embedding_model_loaded = False
+        
+        # OPTIMIZATION: Cache query embeddings (queries repeat often)
+        self._query_embedding_cache = {}
+        self._query_cache_max_size = 1000  # Max cached queries
         
         # Initialize Qdrant if available
         if QDRANT_AVAILABLE and QdrantManager is not None:
@@ -441,21 +447,38 @@ class SimpleHybridSearch:
             # Step 0: Query expansion (if enabled)
             search_queries = [query]
             if enable_query_expansion:
-                try:
-                    from query_expander import QueryExpander
-                    expander = QueryExpander(llm_client=self.llm_client)
-                    search_queries = expander.expand_query(query, max_expansions=3)
-                    logger.info(f"Query expanded to: {search_queries}")
-                except Exception as e:
-                    logger.warning(f"Query expansion failed: {e}, using original query only")
+                # OPTIMIZATION: Skip expansion for simple queries to save time
+                words = query.strip().split()
+                is_simple_query = (
+                    len(words) == 1 or  # Single word
+                    len(query.strip()) < 5 or  # Very short
+                    (query.strip().startswith('"') and query.strip().endswith('"'))  # Exact phrase
+                )
+                
+                if is_simple_query:
+                    logger.info(f"⚡ Skipping query expansion for simple query: '{query}'")
+                    search_queries = [query]
+                else:
+                    try:
+                        from query_expander import QueryExpander
+                        expander = QueryExpander(llm_client=self.llm_client)
+                        search_queries = expander.expand_query(query, max_expansions=3)
+                        logger.info(f"Query expanded to: {search_queries}")
+                    except Exception as e:
+                        logger.warning(f"Query expansion failed: {e}, using original query only")
             
             # Step 1: Get candidates using TF-IDF with proper pagination
             # For pagination to work correctly, we need to get a larger set of results
             # and then apply offset/limit consistently
             
-            # Calculate how many results we need to get to ensure we have enough for pagination
-            initial_limit = min(limit * 3, 200) if enable_ai_reranking else limit
-            search_limit = max(initial_limit, offset + limit + 50)  # Get extra to ensure we have enough
+            # OPTIMIZATION: Reduce initial limit for faster search
+            # We already cap reranking at MAX_RERANK_CANDIDATES (50), so we don't need as many initial results
+            if enable_ai_reranking:
+                # Reduced from limit * 3, 200 to limit * 2, 50 (matching MAX_RERANK_CANDIDATES)
+                initial_limit = min(limit * 2, MAX_RERANK_CANDIDATES)
+            else:
+                initial_limit = limit
+            search_limit = max(initial_limit, offset + limit + RERANK_BUFFER_SIZE)  # Get extra to ensure we have enough
             
             # Search with all expanded queries and combine results
             all_candidates = []
@@ -506,58 +529,97 @@ class SimpleHybridSearch:
             
             # Step 2: AI Reranking (if enabled and LLM client available)
             if enable_ai_reranking and self.llm_client:
-                logger.info(f"🤖 Applying AI reranking to {len(candidates)} results...")
+                # OPTIMIZATION: Skip reranking if top result has very high TF-IDF confidence
+                # This saves time and cost for obvious matches
+                skip_reranking = False
+                if candidates and len(candidates) > 0:
+                    top_score = candidates[0].get('score', 0.0)
+                    if top_score >= TFIDF_HIGH_CONFIDENCE_THRESHOLD:
+                        logger.info(f"⚡ Skipping AI reranking - top result has high TF-IDF confidence ({top_score:.3f} >= {TFIDF_HIGH_CONFIDENCE_THRESHOLD})")
+                        skip_reranking = True
                 
-                # For pagination to work with AI reranking, we need to rerank enough candidates
-                # to cover the requested offset + limit
-                rerank_limit = max(MIN_RERANK_CANDIDATES, offset + limit + RERANK_BUFFER_SIZE)
-                top_candidates = candidates[:min(rerank_limit, len(candidates))]
-                
-                try:
-                    # Use async version for better performance
-                    reranking_result = await self.llm_client.rerank_results_async(
-                        query=query,
-                        results=top_candidates,
-                        custom_instructions=ai_reranking_instructions,
-                        ai_weight=ai_weight,
-                        post_type_priority=post_type_priority
-                    )
+                if not skip_reranking:
+                    logger.info(f"🤖 Applying AI reranking to {len(candidates)} results...")
                     
-                    reranked = reranking_result['results']
-                    metadata = reranking_result['metadata']
+                    # OPTIMIZATION: Limit candidates sent to LLM for faster processing
+                    # For pagination to work with AI reranking, we need to rerank enough candidates
+                    # to cover the requested offset + limit, but cap at MAX_RERANK_CANDIDATES
+                    rerank_limit = max(MIN_RERANK_CANDIDATES, offset + limit + RERANK_BUFFER_SIZE)
+                    rerank_limit = min(rerank_limit, MAX_RERANK_CANDIDATES)  # Cap at max for performance
+                    top_candidates = candidates[:min(rerank_limit, len(candidates))]
                     
-                    # Ensure total_results is included in metadata
-                    metadata['total_results'] = len(candidates)
+                    logger.info(f"📊 Reranking top {len(top_candidates)} candidates (optimized from {len(candidates)} total)")
                     
-                    # Add query intent info for admin tooltips
-                    metadata['query_intent'] = detected_intent
-                    metadata['intent_instructions'] = intent_instructions if intent_instructions else None
-                    
-                    # Apply offset and return top N after reranking
-                    paginated_results = reranked[offset:offset + limit]
-                    
-                    # Ensure ranking_explanation positions are updated for paginated results
-                    for idx, result in enumerate(paginated_results):
-                        if 'ranking_explanation' in result:
-                            result['ranking_explanation']['final_position'] = offset + idx + 1
-                    
-                    logger.info(f"✅ AI reranking successful, returning {len(paginated_results)} results (offset={offset}, limit={limit})")
-                    logger.info(f"🔍 AI RERANKING DEBUG: total_candidates={len(candidates)}, reranked_count={len(reranked)}, paginated_count={len(paginated_results)}")
-                    
-                    # Debug: Log if ranking_explanation exists
-                    if paginated_results and 'ranking_explanation' in paginated_results[0]:
-                        logger.info(f"✅ First paginated result has ranking_explanation: {paginated_results[0]['ranking_explanation']}")
-                    else:
-                        logger.warning(f"⚠️ First paginated result missing ranking_explanation!")
-                    
-                    return paginated_results, metadata
-                    
-                except Exception as e:
-                    logger.error(f"AI reranking failed: {e}, falling back to TF-IDF results")
-                    # Fall through to return TF-IDF results with proper pagination
+                    try:
+                        # Use async version for better performance
+                        reranking_result = await self.llm_client.rerank_results_async(
+                            query=query,
+                            results=top_candidates,
+                            custom_instructions=ai_reranking_instructions,
+                            ai_weight=ai_weight,
+                            post_type_priority=post_type_priority
+                        )
+                        
+                        reranked = reranking_result['results']
+                        metadata = reranking_result['metadata']
+                        
+                        # Ensure total_results is included in metadata
+                        metadata['total_results'] = len(candidates)
+                        
+                        # Add query intent info for admin tooltips
+                        metadata['query_intent'] = detected_intent
+                        metadata['intent_instructions'] = intent_instructions if intent_instructions else None
+                        
+                        # Apply offset and return top N after reranking
+                        paginated_results = reranked[offset:offset + limit]
+                        
+                        # Ensure ranking_explanation positions are updated for paginated results
+                        for idx, result in enumerate(paginated_results):
+                            if 'ranking_explanation' in result:
+                                result['ranking_explanation']['final_position'] = offset + idx + 1
+                        
+                        logger.info(f"✅ AI reranking successful, returning {len(paginated_results)} results (offset={offset}, limit={limit})")
+                        logger.info(f"🔍 AI RERANKING DEBUG: total_candidates={len(candidates)}, reranked_count={len(reranked)}, paginated_count={len(paginated_results)}")
+                        
+                        # Debug: Log if ranking_explanation exists
+                        if paginated_results and 'ranking_explanation' in paginated_results[0]:
+                            logger.info(f"✅ First paginated result has ranking_explanation: {paginated_results[0]['ranking_explanation']}")
+                        else:
+                            logger.warning(f"⚠️ First paginated result missing ranking_explanation!")
+                        
+                        return paginated_results, metadata
+                        
+                    except Exception as e:
+                        logger.error(f"AI reranking failed: {e}, falling back to TF-IDF results")
+                        # Fall through to return TF-IDF results with proper pagination
+                        paginated_results = candidates[offset:offset + limit]
+                        
+                        # Add ranking explanation for fallback results
+                        for idx, result in enumerate(paginated_results):
+                            result['ranking_explanation'] = {
+                                'tfidf_score': round(result.get('score', 0.0), 4),
+                                'ai_score': None,
+                                'ai_score_raw': None,
+                                'hybrid_score': round(result.get('score', 0.0), 4),
+                                'tfidf_weight': 1.0,
+                                'ai_weight': 0.0,
+                                'ai_reason': f'AI reranking failed: {str(e)}',
+                                'post_type': result.get('type', 'unknown'),
+                                'position_before_priority': None,
+                                'final_position': idx + 1,
+                                'post_type_priority': 9999,
+                                'priority_order': post_type_priority if post_type_priority else []
+                            }
+                        
+                        logger.info(f"🔍 TF-IDF FALLBACK DEBUG: total_candidates={len(candidates)}, offset={offset}, limit={limit}, paginated_count={len(paginated_results)}")
+                        return paginated_results, {
+                            'ai_reranking_used': False,
+                            'reason': f'AI reranking failed: {str(e)}',
+                            'total_results': len(candidates)
+                        }
+                else:
+                    # Skip reranking due to high TF-IDF confidence - return TF-IDF results
                     paginated_results = candidates[offset:offset + limit]
-                    
-                    # Add ranking explanation for fallback results
                     for idx, result in enumerate(paginated_results):
                         result['ranking_explanation'] = {
                             'tfidf_score': round(result.get('score', 0.0), 4),
@@ -566,18 +628,16 @@ class SimpleHybridSearch:
                             'hybrid_score': round(result.get('score', 0.0), 4),
                             'tfidf_weight': 1.0,
                             'ai_weight': 0.0,
-                            'ai_reason': f'AI reranking failed: {str(e)}',
+                            'ai_reason': 'Skipped - high TF-IDF confidence',
                             'post_type': result.get('type', 'unknown'),
                             'position_before_priority': None,
                             'final_position': idx + 1,
                             'post_type_priority': 9999,
                             'priority_order': post_type_priority if post_type_priority else []
                         }
-                    
-                    logger.info(f"🔍 TF-IDF FALLBACK DEBUG: total_candidates={len(candidates)}, offset={offset}, limit={limit}, paginated_count={len(paginated_results)}")
                     return paginated_results, {
                         'ai_reranking_used': False,
-                        'reason': f'AI reranking failed: {str(e)}',
+                        'reason': 'Skipped - high TF-IDF confidence',
                         'total_results': len(candidates)
                     }
             else:
@@ -760,6 +820,42 @@ Return ONLY the queries, one per line, without numbering or bullet points.
         except Exception as e:
             logger.error(f"Error generating content-based alternative queries: {e}")
             return []  # Return empty list on error, don't break search
+    
+    async def _get_query_embedding_cached(self, query: str) -> List[float]:
+        """
+        Get query embedding with caching (optimization for repeated queries).
+        
+        Args:
+            query: Search query text
+            
+        Returns:
+            Embedding vector (384 dimensions)
+        """
+        import hashlib
+        
+        # Normalize query for cache key (lowercase, strip whitespace)
+        normalized_query = query.lower().strip()
+        cache_key = hashlib.md5(normalized_query.encode()).hexdigest()
+        
+        # Check cache first
+        if cache_key in self._query_embedding_cache:
+            logger.debug(f"✅ Query embedding cache hit for: '{query[:50]}...'")
+            return self._query_embedding_cache[cache_key]
+        
+        # Generate embedding
+        embedding = await self._get_embedding(query)
+        
+        # Cache it (with size limit to prevent memory issues)
+        if len(self._query_embedding_cache) >= self._query_cache_max_size:
+            # Remove oldest entry (simple FIFO - remove first key)
+            oldest_key = next(iter(self._query_embedding_cache))
+            del self._query_embedding_cache[oldest_key]
+            logger.debug(f"Evicted oldest query embedding from cache (cache full)")
+        
+        self._query_embedding_cache[cache_key] = embedding
+        logger.debug(f"💾 Cached query embedding for: '{query[:50]}...'")
+        
+        return embedding
     
     async def _get_embedding(self, text: str) -> List[float]:
         """Get semantic embedding for text using OpenAI API or fallback."""
