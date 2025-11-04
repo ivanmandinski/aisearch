@@ -528,6 +528,12 @@ class SimpleHybridSearch:
                 return [], {'ai_reranking_used': False, 'message': 'No results found', 'total_results': 0}
             
             # Step 2: AI Reranking (if enabled and LLM client available)
+            # Debug logging
+            logger.info(f"🤖 AI Reranking Check:")
+            logger.info(f"   enable_ai_reranking parameter: {enable_ai_reranking} (type: {type(enable_ai_reranking).__name__})")
+            logger.info(f"   LLM client available: {self.llm_client is not None}")
+            logger.info(f"   Will attempt reranking: {enable_ai_reranking and self.llm_client is not None}")
+            
             if enable_ai_reranking and self.llm_client:
                 # OPTIMIZATION: Skip reranking if top result has very high TF-IDF confidence
                 # This saves time and cost for obvious matches

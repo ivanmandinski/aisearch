@@ -338,6 +338,10 @@ async def search(request: SearchRequest, http_request: Request):
                 answer = None
         else:
             # Regular search with AI reranking
+            # Debug logging for AI reranking parameter
+            logger.info(f"🔍 Search Request - enable_ai_reranking: {request.enable_ai_reranking} (type: {type(request.enable_ai_reranking).__name__})")
+            logger.info(f"🔍 Search Request - ai_weight: {request.ai_weight}")
+            
             results, search_metadata = await search_system.search(
                 query=search_query,
                 limit=request.limit,
