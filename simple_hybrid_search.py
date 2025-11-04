@@ -92,14 +92,37 @@ class SimpleHybridSearch:
         # Initialize Cerebras LLM if available
         if CEREBRAS_AVAILABLE and CerebrasLLM is not None:
             try:
-                logger.info("Initializing CerebrasLLM...")
-                self.llm_client = CerebrasLLM()
-                logger.info("CerebrasLLM initialized successfully")
+                # Check if API key is configured
+                if not settings.cerebras_api_key or settings.cerebras_api_key.strip() == "":
+                    logger.warning("⚠️ Cerebras API key not configured - AI reranking disabled")
+                    logger.warning("   Set CEREBRAS_API_KEY environment variable to enable AI reranking")
+                    self.llm_client = None
+                else:
+                    logger.info("Initializing CerebrasLLM...")
+                    logger.info(f"   API Base: {settings.cerebras_api_base}")
+                    logger.info(f"   Model: {settings.cerebras_model}")
+                    self.llm_client = CerebrasLLM()
+                    
+                    # Test connection to ensure it's working
+                    if hasattr(self.llm_client, 'test_connection'):
+                        logger.info("Testing Cerebras API connection...")
+                        connection_ok = self.llm_client.test_connection()
+                        if connection_ok:
+                            logger.info("✅ CerebrasLLM initialized and connection tested successfully")
+                        else:
+                            logger.warning("⚠️ CerebrasLLM initialized but connection test failed - reranking may not work")
+                            logger.warning("   Check your CEREBRAS_API_KEY and CEREBRAS_API_BASE settings")
+                    else:
+                        logger.info("✅ CerebrasLLM initialized successfully (no connection test available)")
             except Exception as e:
-                logger.error(f"Failed to initialize CerebrasLLM: {e}")
+                logger.error(f"❌ Failed to initialize CerebrasLLM: {e}", exc_info=True)
+                logger.error("   Check your CEREBRAS_API_KEY and CEREBRAS_API_BASE environment variables")
                 self.llm_client = None
         else:
-            logger.warning("Cerebras LLM not available - AI answers disabled")
+            if not CEREBRAS_AVAILABLE:
+                logger.warning("⚠️ Cerebras LLM not available (CEREBRAS_AVAILABLE=False) - AI reranking disabled")
+            elif CerebrasLLM is None:
+                logger.warning("⚠️ CerebrasLLM class not available - AI reranking disabled")
             self.llm_client = None
         
         self.tfidf_vectorizer = TfidfVectorizer(
@@ -376,11 +399,10 @@ class SimpleHybridSearch:
         enable_ai_reranking: bool = True,
         ai_weight: float = 0.7,
         ai_reranking_instructions: str = "",
-        enable_query_expansion: bool = True,
         post_type_priority: Optional[List[str]] = None
     ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
-        Perform search with optional AI reranking and query expansion.
+        Perform search with optional AI reranking.
         
         Args:
             query: Search query
@@ -389,7 +411,6 @@ class SimpleHybridSearch:
             enable_ai_reranking: Whether to use AI reranking
             ai_weight: Weight for AI score (0-1), higher = more AI influence
             ai_reranking_instructions: Custom instructions for AI reranking
-            enable_query_expansion: Whether to expand query with synonyms
             post_type_priority: List of post types in priority order (e.g., ['post', 'page'])
             
         Returns:
@@ -444,29 +465,6 @@ class SimpleHybridSearch:
                 post_type_priority = intent_based_priority
                 logger.info(f"Using intent-based priority: {post_type_priority}")
             
-            # Step 0: Query expansion (if enabled)
-            search_queries = [query]
-            if enable_query_expansion:
-                # OPTIMIZATION: Skip expansion for simple queries to save time
-                words = query.strip().split()
-                is_simple_query = (
-                    len(words) == 1 or  # Single word
-                    len(query.strip()) < 5 or  # Very short
-                    (query.strip().startswith('"') and query.strip().endswith('"'))  # Exact phrase
-                )
-                
-                if is_simple_query:
-                    logger.info(f"⚡ Skipping query expansion for simple query: '{query}'")
-                    search_queries = [query]
-                else:
-                    try:
-                        from query_expander import QueryExpander
-                        expander = QueryExpander(llm_client=self.llm_client)
-                        search_queries = expander.expand_query(query, max_expansions=3)
-                        logger.info(f"Query expanded to: {search_queries}")
-                    except Exception as e:
-                        logger.warning(f"Query expansion failed: {e}, using original query only")
-            
             # Step 1: Get candidates using TF-IDF with proper pagination
             # For pagination to work correctly, we need to get a larger set of results
             # and then apply offset/limit consistently
@@ -480,58 +478,51 @@ class SimpleHybridSearch:
                 initial_limit = limit
             search_limit = max(initial_limit, offset + limit + RERANK_BUFFER_SIZE)  # Get extra to ensure we have enough
             
-            # Search with all expanded queries and combine results
-            all_candidates = []
-            seen_ids = set()
+            # Perform TF-IDF search
+            candidates = []
             
-            for search_query in search_queries:
-                query_candidates = []
+            # If we have TF-IDF fitted, use it for search
+            if self.tfidf_matrix is not None and len(self.documents) > 0:
+                logger.info(f"Using TF-IDF search for '{query}' (getting {search_limit} candidates)")
+                candidates = self._tfidf_search(query, search_limit, 0)  # Always start from 0 for initial search
                 
-                # If we have TF-IDF fitted, use it for search
-                if self.tfidf_matrix is not None and len(self.documents) > 0:
-                    logger.info(f"Using TF-IDF search for '{search_query}' (getting {search_limit} candidates)")
-                    query_candidates = self._tfidf_search(search_query, search_limit, 0)  # Always start from 0 for initial search
-                    
-                    # If TF-IDF returns poor results (low scores), add simple text search as backup
-                    if len(query_candidates) < 3 or (query_candidates and query_candidates[0]['score'] < 0.1):
-                        logger.info(f"TF-IDF returned poor results, adding simple text search fallback for '{search_query}'")
-                        simple_results = self._simple_text_search(search_query, search_limit // 2)
-                        query_candidates.extend(simple_results)
-                else:
-                    # Fallback to simple text search
-                    logger.info(f"Using simple text search for '{search_query}' (getting {search_limit} candidates)")
-                    query_candidates = self._simple_text_search(search_query, search_limit)
-                
-                # Add unique candidates (avoid duplicates)
-                for candidate in query_candidates:
-                    if candidate['id'] not in seen_ids:
-                        all_candidates.append(candidate)
-                        seen_ids.add(candidate['id'])
-                    else:
-                        # If duplicate, keep the one with higher score
-                        existing = next((c for c in all_candidates if c['id'] == candidate['id']), None)
-                        if existing and candidate['score'] > existing['score']:
-                            all_candidates.remove(existing)
-                            all_candidates.append(candidate)
+                # If TF-IDF returns poor results (low scores), add simple text search as backup
+                if len(candidates) < 3 or (candidates and candidates[0]['score'] < 0.1):
+                    logger.info(f"TF-IDF returned poor results, adding simple text search fallback for '{query}'")
+                    simple_results = self._simple_text_search(query, search_limit // 2)
+                    candidates.extend(simple_results)
+            else:
+                # Fallback to simple text search
+                logger.info(f"Using simple text search for '{query}' (getting {search_limit} candidates)")
+                candidates = self._simple_text_search(query, search_limit)
             
-            # Sort combined candidates by score
-            all_candidates.sort(key=lambda x: x.get('score', 0), reverse=True)
+            # Sort candidates by score
+            candidates.sort(key=lambda x: x.get('score', 0), reverse=True)
             
             # Apply post type priority if specified
             if post_type_priority and len(post_type_priority) > 0:
                 logger.info(f"Applying post type priority: {post_type_priority}")
-                candidates = self._apply_post_type_priority(all_candidates, post_type_priority)
-            else:
-                candidates = all_candidates
+                candidates = self._apply_post_type_priority(candidates, post_type_priority)
             
             if not candidates:
                 return [], {'ai_reranking_used': False, 'message': 'No results found', 'total_results': 0}
             
             # Step 2: AI Reranking (if enabled and LLM client available)
+            # Ensure enable_ai_reranking is a proper boolean
+            if isinstance(enable_ai_reranking, str):
+                enable_ai_reranking = enable_ai_reranking.lower() in ('true', '1', 'yes', 'on', 'enabled')
+            elif enable_ai_reranking is None:
+                enable_ai_reranking = True  # Default to enabled
+            else:
+                enable_ai_reranking = bool(enable_ai_reranking)
+            
             # Debug logging
             logger.info(f"🤖 AI Reranking Check:")
             logger.info(f"   enable_ai_reranking parameter: {enable_ai_reranking} (type: {type(enable_ai_reranking).__name__})")
             logger.info(f"   LLM client available: {self.llm_client is not None}")
+            if self.llm_client:
+                logger.info(f"   LLM client type: {type(self.llm_client).__name__}")
+                logger.info(f"   LLM model: {getattr(self.llm_client, 'model', 'unknown')}")
             logger.info(f"   Will attempt reranking: {enable_ai_reranking and self.llm_client is not None}")
             
             if enable_ai_reranking and self.llm_client:
@@ -648,11 +639,16 @@ class SimpleHybridSearch:
                     }
             else:
                 if not enable_ai_reranking:
-                    logger.info("AI reranking disabled, using TF-IDF results")
+                    logger.info("❌ AI reranking disabled by parameter, using TF-IDF results")
                     disable_reason = "AI reranking disabled in settings"
                 elif not self.llm_client:
-                    logger.warning("LLM client not available, using TF-IDF results")
-                    disable_reason = "LLM client not initialized (check Cerebras API key)"
+                    logger.warning("❌ LLM client not available, using TF-IDF results")
+                    if not CEREBRAS_AVAILABLE:
+                        disable_reason = "Cerebras LLM not available (check imports)"
+                    elif CerebrasLLM is None:
+                        disable_reason = "CerebrasLLM class not imported"
+                    else:
+                        disable_reason = "LLM client not initialized (check Cerebras API key)"
                 else:
                     disable_reason = "AI reranking unavailable"
             
