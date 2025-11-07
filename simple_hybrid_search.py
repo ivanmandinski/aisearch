@@ -705,11 +705,11 @@ class SimpleHybridSearch:
             logger.error(f"Error in search: {e}")
             return [], {'error': str(e), 'total_results': 0}
     
-    async def search_with_answer(self, query: str, limit: int = 5, offset: int = 0, custom_instructions: str = "") -> Dict[str, Any]:
+    async def search_with_answer(self, query: str, limit: int = 5, offset: int = 0, custom_instructions: str = "", enable_ai_reranking: bool = True) -> Dict[str, Any]:
         """Search and generate AI answer."""
         try:
-            # Get search results (without AI reranking for answer generation to save cost)
-            results, search_metadata = await self.search(query, limit, offset, enable_ai_reranking=False)
+            # Get search results with AI reranking if enabled
+            results, search_metadata = await self.search(query, limit, offset, enable_ai_reranking=enable_ai_reranking)
             
             if not results:
                 return {
@@ -1582,13 +1582,15 @@ RULES:
             now = datetime.now(doc_datetime.tzinfo)
             days_old = (now - doc_datetime).days
             
-            # Boost: 1.5x for <30 days, 1.2x for <90 days, 1.1x for <365 days, 1.0x for older
-            if days_old < 30:
-                return 1.5
+            # Boost: 2.0x for <7 days, 1.8x for <30 days, 1.5x for <90 days, 1.2x for <180 days, 1.0x for older
+            if days_old < 7:
+                return 2.0  # Very recent content gets strong boost
+            elif days_old < 30:
+                return 1.8  # Recent content gets strong boost
             elif days_old < 90:
-                return 1.2
-            elif days_old < 365:
-                return 1.1
+                return 1.5  # Moderately recent content gets moderate boost
+            elif days_old < 180:
+                return 1.2  # Somewhat recent content gets slight boost
             return 1.0
             
         except Exception as e:

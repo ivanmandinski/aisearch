@@ -301,18 +301,36 @@ async def search(request: SearchRequest, http_request: Request):
             )
         
         # CRITICAL FIX: Ensure enable_ai_reranking is properly parsed as boolean
-        # Pydantic should handle this, but sometimes JSON booleans come as strings
+        # Pydantic should handle this, but sometimes JSON booleans come as strings or False when they should be True
         enable_ai_reranking = request.enable_ai_reranking
+        
+        # More robust boolean parsing
         if isinstance(enable_ai_reranking, str):
-            enable_ai_reranking = enable_ai_reranking.lower() in ('true', '1', 'yes', 'on', 'enabled')
+            # Handle string booleans
+            enable_ai_reranking = enable_ai_reranking.lower().strip() in ('true', '1', 'yes', 'on', 'enabled', 'y')
         elif enable_ai_reranking is None:
-            enable_ai_reranking = True  # Default to enabled
+            # Default to enabled if not specified
+            enable_ai_reranking = True
+        elif isinstance(enable_ai_reranking, bool):
+            # Already a boolean, use as-is
+            enable_ai_reranking = enable_ai_reranking
         else:
+            # Convert other types (int, etc.) to boolean
             enable_ai_reranking = bool(enable_ai_reranking)
+        
+        # CRITICAL FALLBACK: If enable_ai_reranking is False but LLM is available,
+        # default to True (AI reranking should be enabled by default when LLM is available)
+        # This handles cases where WordPress sends False incorrectly
+        if not enable_ai_reranking and llm_client:
+            logger.warning(f"⚠️ enable_ai_reranking is False but LLM client is available. Defaulting to True.")
+            enable_ai_reranking = True
         
         logger.info(f"🔍 AI Reranking Parameter Check:")
         logger.info(f"   Raw value: {request.enable_ai_reranking} (type: {type(request.enable_ai_reranking).__name__})")
         logger.info(f"   Processed value: {enable_ai_reranking} (type: {type(enable_ai_reranking).__name__})")
+        logger.info(f"   LLM client available: {llm_client is not None}")
+        if llm_client:
+            logger.info(f"   Final decision: {'✅ ENABLED' if enable_ai_reranking else '❌ DISABLED'}")
         
         # Process query with LLM if available (optional)
         query_analysis = None
@@ -354,10 +372,12 @@ async def search(request: SearchRequest, http_request: Request):
         
         if request.include_answer:
             try:
+                # Use processed enable_ai_reranking value even for answer generation
                 result = await search_system.search_with_answer(
                     search_query, 
                     limit=request.limit, 
-                    custom_instructions=request.ai_instructions
+                    custom_instructions=request.ai_instructions,
+                    enable_ai_reranking=enable_ai_reranking  # Use processed value
                 )
                 results = result.get('sources', [])
                 answer = result.get('answer')
@@ -877,23 +897,55 @@ async def get_suggestions(
 
 # Helper functions
 def _apply_filters(results: List[Dict[str, Any]], filters: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Apply filters to search results."""
+    """Apply filters and sorting to search results."""
     filtered_results = []
     
     for result in results:
         include = True
         
         # Filter by content type
-        if "type" in filters and result.get("type") != filters["type"]:
+        if "type" in filters and filters["type"] and result.get("type") != filters["type"]:
             include = False
         
         # Filter by author
-        if "author" in filters and result.get("author") != filters["author"]:
+        if "author" in filters and filters["author"] and result.get("author") != filters["author"]:
             include = False
         
+        # Filter by date
+        if "date" in filters and filters["date"]:
+            date_filter = filters["date"]
+            if result.get("date"):
+                try:
+                    from datetime import datetime, timedelta, timezone
+                    result_date = datetime.fromisoformat(result["date"].replace('Z', '+00:00'))
+                    now = datetime.now(result_date.tzinfo)
+                    
+                    # Calculate threshold based on filter
+                    if date_filter == "day":
+                        threshold = now - timedelta(days=1)
+                    elif date_filter == "week":
+                        threshold = now - timedelta(days=7)
+                    elif date_filter == "month":
+                        threshold = now - timedelta(days=30)
+                    elif date_filter == "year":
+                        threshold = now - timedelta(days=365)
+                    else:
+                        threshold = None
+                    
+                    if threshold and result_date < threshold:
+                        include = False
+                except Exception as e:
+                    logger.warning(f"Error filtering by date: {e}")
+        
         # Filter by categories
-        if "categories" in filters:
-            result_categories = [cat["slug"] for cat in result.get("categories", [])]
+        if "categories" in filters and filters["categories"]:
+            result_categories = []
+            for cat in result.get("categories", []):
+                if isinstance(cat, dict):
+                    result_categories.append(cat.get("slug", ""))
+                else:
+                    result_categories.append(str(cat))
+            
             filter_categories = filters["categories"]
             if isinstance(filter_categories, str):
                 filter_categories = [filter_categories]
@@ -902,8 +954,14 @@ def _apply_filters(results: List[Dict[str, Any]], filters: Dict[str, Any]) -> Li
                 include = False
         
         # Filter by tags
-        if "tags" in filters:
-            result_tags = [tag["slug"] for tag in result.get("tags", [])]
+        if "tags" in filters and filters["tags"]:
+            result_tags = []
+            for tag in result.get("tags", []):
+                if isinstance(tag, dict):
+                    result_tags.append(tag.get("slug", ""))
+                else:
+                    result_tags.append(str(tag))
+            
             filter_tags = filters["tags"]
             if isinstance(filter_tags, str):
                 filter_tags = [filter_tags]
@@ -914,7 +972,33 @@ def _apply_filters(results: List[Dict[str, Any]], filters: Dict[str, Any]) -> Li
         if include:
             filtered_results.append(result)
     
+    # Apply sorting if specified
+    if "sort" in filters and filters["sort"] and filters["sort"] != "relevance":
+        sort_method = filters["sort"]
+        
+        if sort_method == "date-desc":
+            filtered_results.sort(key=lambda x: _get_sort_date(x), reverse=True)
+        elif sort_method == "date-asc":
+            filtered_results.sort(key=lambda x: _get_sort_date(x), reverse=False)
+        elif sort_method == "title-asc":
+            filtered_results.sort(key=lambda x: x.get("title", "").lower())
+        # "relevance" or unknown - keep original order (already sorted by score)
+    
     return filtered_results
+
+
+def _get_sort_date(result: Dict[str, Any]) -> float:
+    """Get sortable date value for a result."""
+    date_str = result.get("date") or result.get("modified") or "1970-01-01"
+    try:
+        from datetime import datetime
+        if 'T' in date_str:
+            dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+        else:
+            dt = datetime.strptime(date_str, '%Y-%m-%d')
+        return dt.timestamp()
+    except Exception:
+        return 0.0
 
 
 # Error handlers

@@ -288,10 +288,40 @@ class WordPressContentFetcher:
                             if source_url:
                                 return source_url
                 
-                # Method 2: Try to fetch media URL from WordPress REST API
-                # Don't construct URLs manually - WordPress stores images in date-based subdirectories
-                # Instead, return empty string and let frontend fetch via REST API using media ID
-                # The frontend will use the featured_media ID to fetch the real URL
+                # Method 2: Try to fetch media URL from WordPress REST API if we have base_url
+                # This is a synchronous fallback - frontend will also try async fetch
+                if hasattr(self, 'base_url') and self.base_url:
+                    try:
+                        import requests
+                        media_url = f"{self.base_url}/wp-json/wp/v2/media/{featured_media_id}"
+                        response = requests.get(media_url, timeout=2)
+                        if response.status_code == 200:
+                            media_data = response.json()
+                            media_details = media_data.get("media_details", {})
+                            if media_details:
+                                sizes = media_details.get("sizes", {})
+                                # Try different sizes in order of preference
+                                for size_name in ["medium_large", "medium", "large", "full"]:
+                                    if size_name in sizes:
+                                        source_url = sizes[size_name].get("source_url", "")
+                                        if source_url:
+                                            logger.info(f"Fetched featured image from REST API: {source_url}")
+                                            return source_url
+                                # Fallback to any available size
+                                for size_name, size_data in sizes.items():
+                                    source_url = size_data.get("source_url", "")
+                                    if source_url:
+                                        logger.info(f"Fetched featured image from REST API (fallback): {source_url}")
+                                        return source_url
+                            # Direct source_url fallback
+                            source_url = media_data.get("source_url", "")
+                            if source_url:
+                                logger.info(f"Fetched featured image from REST API (direct): {source_url}")
+                                return source_url
+                    except Exception as e:
+                        logger.debug(f"Could not fetch media from REST API: {e}, frontend will fetch async")
+                
+                # Return empty string - frontend will fetch via REST API using media ID
                 return ""
             
             # Method 3: Check for direct image fields in the item

@@ -296,6 +296,9 @@ Example of what NOT to do:
             
             answer = response.choices[0].message.content.strip()
             
+            # Convert markdown links to HTML links
+            answer = self._convert_markdown_links_to_html(answer)
+            
             # Validate that the answer is based on search results
             answer = self._validate_answer_context(answer, search_results)
             
@@ -305,6 +308,41 @@ Example of what NOT to do:
         except Exception as e:
             logger.error(f"Error generating answer: {e}")
             return "I encountered an error while generating an answer. Please try again."
+    
+    def _convert_markdown_links_to_html(self, text: str) -> str:
+        """
+        Convert markdown links [text](url) to HTML links <a href="url">text</a>.
+        Also converts plain URLs to clickable links.
+        
+        Args:
+            text: Text that may contain markdown links or plain URLs
+            
+        Returns:
+            Text with HTML links
+        """
+        import re
+        
+        # Convert markdown links [text](url) to HTML
+        text = re.sub(
+            r'\[([^\]]+)\]\(([^)]+)\)',
+            r'<a href="\2" target="_blank" rel="noopener noreferrer">\1</a>',
+            text
+        )
+        
+        # Convert plain URLs to clickable links (but not if already in <a> tags)
+        # Match URLs that are not already inside HTML tags
+        url_pattern = r'(?<!["\'>])(https?://[^\s<>"\'{}|\\^`\[\]]+)(?!["\'])(?![^<]*>)'
+        text = re.sub(
+            url_pattern,
+            r'<a href="\1" target="_blank" rel="noopener noreferrer">\1</a>',
+            text
+        )
+        
+        # Convert Source references to links if we have search results
+        # Pattern: "Source 1" -> link to first result
+        # This will be handled by the frontend if needed
+        
+        return text
     
     def _validate_answer_context(self, answer: str, search_results: List[Dict[str, Any]]) -> str:
         """Validate that the answer is based on search results and filter out irrelevant terms."""
@@ -623,7 +661,7 @@ Analyze these search results for the query: "{query}"
 
 📊 SCORING CRITERIA (Rate each result 0-100):
 
-1. **Semantic Relevance** (40 points)
+1. **Semantic Relevance** (45 points)
    - Does the content match the query's semantic meaning?
    - Is it exactly what the user is looking for?
    
@@ -632,7 +670,7 @@ Analyze these search results for the query: "{query}"
    ✅ Query: "toxic site remediation" → Result: "Environmental Remediation Services" (Score: 85 - conceptually related)
    ❌ Query: "water treatment" → Result: "Solid Waste Management" (Score: 25 - not relevant)
 
-2. **User Intent** (30 points)
+2. **User Intent** (40 points)
    - Does it address what the user wants to accomplish?
    
    INTENT SCORING:
@@ -652,12 +690,12 @@ Analyze these search results for the query: "{query}"
    - Other professionals → Score: 30-40
    - Blog posts about leadership → Score: 40-50
 
-3. **Content Quality** (20 points)
+3. **Content Quality** (10 points)
    - Based on title and excerpt, does it seem comprehensive?
    - Is it from a credible source (inferred from title/URL)?
    - Does it appear to be high-quality content?
 
-4. **Specificity** (10 points)
+4. **Specificity** (5 points)
    - Is it specifically about the topic or too broad/general?
    - Does it cover the exact aspect the user asked about?
 
@@ -905,7 +943,7 @@ Analyze these search results for the query: "{query}"
 
 📊 SCORING CRITERIA (Rate each result 0-100):
 
-1. **Semantic Relevance** (40 points)
+1. **Semantic Relevance** (45 points)
    - Does the content match the query's semantic meaning?
    - Is it exactly what the user is looking for?
    
@@ -914,7 +952,7 @@ Analyze these search results for the query: "{query}"
    ✅ Query: "toxic site remediation" → Result: "Environmental Remediation Services" (Score: 85 - conceptually related)
    ❌ Query: "water treatment" → Result: "Solid Waste Management" (Score: 25 - not relevant)
 
-2. **User Intent** (30 points)
+2. **User Intent** (40 points)
    - Does it address what the user wants to accomplish?
    
    INTENT SCORING:
@@ -934,12 +972,12 @@ Analyze these search results for the query: "{query}"
    - Other professionals → Score: 30-40
    - Blog posts about leadership → Score: 40-50
 
-3. **Content Quality** (20 points)
+3. **Content Quality** (10 points)
    - Based on title and excerpt, does it seem comprehensive?
    - Is it from a credible source (inferred from title/URL)?
    - Does it appear to be high-quality content?
 
-4. **Specificity** (10 points)
+4. **Specificity** (5 points)
    - Is it specifically about the topic or too broad/general?
    - Does it cover the exact aspect the user asked about?
 
