@@ -835,8 +835,55 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
             else:
                 reranked_results.sort(key=lambda x: x.get('hybrid_score', 0), reverse=True)
             
-            # Add position and priority info to ranking explanation after sorting
-            for idx, result in enumerate(reranked_results):
+            # Filter out results marked as not relevant by AI
+            filtered_results = []
+            not_relevant_keywords = [
+                'not relevant',
+                'not the same',
+                'not related',
+                'unrelated',
+                'does not match',
+                'does not address',
+                'irrelevant',
+                'not applicable',
+                'wrong',
+                'incorrect',
+                'different person',
+                'different topic',
+                'different subject'
+            ]
+            
+            for result in reranked_results:
+                ai_reason = result.get('ai_reason', '').lower()
+                ai_score_raw = result.get('ranking_explanation', {}).get('ai_score_raw', None)
+                
+                # Check if AI explicitly marked as not relevant
+                is_not_relevant = False
+                
+                # Check AI reasoning text for not relevant keywords
+                if ai_reason:
+                    for keyword in not_relevant_keywords:
+                        if keyword in ai_reason:
+                            is_not_relevant = True
+                            logger.info(f"🚫 Filtering out result '{result.get('title', '')[:50]}' - AI reason: '{ai_reason[:100]}'")
+                            break
+                
+                # Also filter if AI score is very low (below 30) AND reason contains negative indicators
+                if not is_not_relevant and ai_score_raw is not None:
+                    if ai_score_raw < 30 and any(keyword in ai_reason for keyword in ['not', 'different', 'wrong', 'incorrect']):
+                        is_not_relevant = True
+                        logger.info(f"🚫 Filtering out result '{result.get('title', '')[:50]}' - Low AI score ({ai_score_raw}) with negative reasoning")
+                
+                if not is_not_relevant:
+                    filtered_results.append(result)
+                else:
+                    logger.debug(f"Filtered out: {result.get('title', 'Unknown')[:50]} - Reason: {ai_reason[:100]}")
+            
+            if len(filtered_results) < len(reranked_results):
+                logger.info(f"🚫 Filtered out {len(reranked_results) - len(filtered_results)} not relevant results")
+            
+            # Add position and priority info to ranking explanation after filtering
+            for idx, result in enumerate(filtered_results):
                 if 'ranking_explanation' in result:
                     result['ranking_explanation']['final_position'] = idx + 1
                     result['ranking_explanation']['post_type_priority'] = priority_map.get(result.get('type', ''), 9999)
@@ -856,14 +903,16 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
                 'tfidf_weight': 1.0 - ai_weight,
                 'custom_instructions_used': bool(custom_instructions),
                 'post_type_priority_applied': bool(post_type_priority),
-                'results_reranked': len(reranked_results)
+                'results_reranked': len(reranked_results),
+                'results_filtered': len(reranked_results) - len(filtered_results)
             }
             
             logger.info(f"✅ AI reranking complete! Time: {response_time:.2f}s, Cost: ${cost:.6f}, Tokens: {tokens_used}")
-            logger.info(f"Top result: '{reranked_results[0]['title']}' (hybrid: {reranked_results[0]['hybrid_score']:.3f})")
+            if filtered_results:
+                logger.info(f"Top result: '{filtered_results[0]['title']}' (hybrid: {filtered_results[0]['hybrid_score']:.3f})")
             
             return {
-                'results': reranked_results,
+                'results': filtered_results,
                 'metadata': metadata
             }
             
@@ -1117,8 +1166,55 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
             else:
                 reranked_results.sort(key=lambda x: x.get('hybrid_score', 0), reverse=True)
             
-            # Add position and priority info to ranking explanation after sorting
-            for idx, result in enumerate(reranked_results):
+            # Filter out results marked as not relevant by AI
+            filtered_results = []
+            not_relevant_keywords = [
+                'not relevant',
+                'not the same',
+                'not related',
+                'unrelated',
+                'does not match',
+                'does not address',
+                'irrelevant',
+                'not applicable',
+                'wrong',
+                'incorrect',
+                'different person',
+                'different topic',
+                'different subject'
+            ]
+            
+            for result in reranked_results:
+                ai_reason = result.get('ai_reason', '').lower()
+                ai_score_raw = result.get('ranking_explanation', {}).get('ai_score_raw', None)
+                
+                # Check if AI explicitly marked as not relevant
+                is_not_relevant = False
+                
+                # Check AI reasoning text for not relevant keywords
+                if ai_reason:
+                    for keyword in not_relevant_keywords:
+                        if keyword in ai_reason:
+                            is_not_relevant = True
+                            logger.info(f"🚫 Filtering out result '{result.get('title', '')[:50]}' - AI reason: '{ai_reason[:100]}'")
+                            break
+                
+                # Also filter if AI score is very low (below 30) AND reason contains negative indicators
+                if not is_not_relevant and ai_score_raw is not None:
+                    if ai_score_raw < 30 and any(keyword in ai_reason for keyword in ['not', 'different', 'wrong', 'incorrect']):
+                        is_not_relevant = True
+                        logger.info(f"🚫 Filtering out result '{result.get('title', '')[:50]}' - Low AI score ({ai_score_raw}) with negative reasoning")
+                
+                if not is_not_relevant:
+                    filtered_results.append(result)
+                else:
+                    logger.debug(f"Filtered out: {result.get('title', 'Unknown')[:50]} - Reason: {ai_reason[:100]}")
+            
+            if len(filtered_results) < len(reranked_results):
+                logger.info(f"🚫 Filtered out {len(reranked_results) - len(filtered_results)} not relevant results")
+            
+            # Add position and priority info to ranking explanation after filtering
+            for idx, result in enumerate(filtered_results):
                 if 'ranking_explanation' in result:
                     result['ranking_explanation']['final_position'] = idx + 1
                     result['ranking_explanation']['post_type_priority'] = priority_map.get(result.get('type', ''), 9999)
@@ -1138,14 +1234,16 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
                 'tfidf_weight': 1.0 - ai_weight,
                 'custom_instructions_used': bool(custom_instructions),
                 'post_type_priority_applied': bool(post_type_priority),
-                'results_reranked': len(reranked_results)
+                'results_reranked': len(reranked_results),
+                'results_filtered': len(reranked_results) - len(filtered_results)
             }
             
             logger.info(f"✅ AI reranking complete! Time: {response_time:.2f}s, Cost: ${cost:.6f}, Tokens: {tokens_used}")
-            logger.info(f"Top result: '{reranked_results[0]['title']}' (hybrid: {reranked_results[0]['hybrid_score']:.3f})")
+            if filtered_results:
+                logger.info(f"Top result: '{filtered_results[0]['title']}' (hybrid: {filtered_results[0]['hybrid_score']:.3f})")
             
             return {
-                'results': reranked_results,
+                'results': filtered_results,
                 'metadata': metadata
             }
             
