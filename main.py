@@ -300,14 +300,51 @@ async def search(request: SearchRequest, http_request: Request):
                 }
             )
         
+        # CRITICAL FIX: Ensure enable_ai_reranking is properly parsed as boolean
+        # Pydantic should handle this, but sometimes JSON booleans come as strings
+        enable_ai_reranking = request.enable_ai_reranking
+        if isinstance(enable_ai_reranking, str):
+            enable_ai_reranking = enable_ai_reranking.lower() in ('true', '1', 'yes', 'on', 'enabled')
+        elif enable_ai_reranking is None:
+            enable_ai_reranking = True  # Default to enabled
+        else:
+            enable_ai_reranking = bool(enable_ai_reranking)
+        
+        logger.info(f"🔍 AI Reranking Parameter Check:")
+        logger.info(f"   Raw value: {request.enable_ai_reranking} (type: {type(request.enable_ai_reranking).__name__})")
+        logger.info(f"   Processed value: {enable_ai_reranking} (type: {type(enable_ai_reranking).__name__})")
+        
         # Process query with LLM if available (optional)
         query_analysis = None
         search_query = request.query
         
+        # FIX: Handle malformed query (if query rewriting returned JSON string instead of just the query)
+        if search_query.startswith('```') and '{' in search_query:
+            logger.warning(f"⚠️ Detected malformed query (contains JSON), extracting rewritten_query")
+            try:
+                import json
+                import re
+                # Try to extract JSON from markdown code blocks
+                json_match = re.search(r'\{[^}]+\}', search_query, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group()
+                    parsed = json.loads(json_str)
+                    if 'rewritten_query' in parsed:
+                        search_query = parsed['rewritten_query']
+                        logger.info(f"✅ Extracted rewritten_query: {search_query}")
+                    else:
+                        logger.warning(f"⚠️ JSON found but no rewritten_query, using original")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to parse malformed query: {e}, using as-is")
+        
         if llm_client:
             try:
-                query_analysis = await llm_client.process_query_async(request.query)
-                search_query = query_analysis.get("rewritten_query", request.query)
+                query_analysis = await llm_client.process_query_async(search_query)
+                rewritten = query_analysis.get("rewritten_query", search_query)
+                # Only use rewritten if it's actually different and not malformed
+                if rewritten and rewritten != search_query and not rewritten.startswith('```'):
+                    search_query = rewritten
+                    logger.info(f"✅ Using rewritten query: {search_query}")
             except Exception as e:
                 logger.warning(f"Query analysis failed: {e} - using original query")
         
@@ -330,7 +367,7 @@ async def search(request: SearchRequest, http_request: Request):
                 results, search_metadata = await search_system.search(
                     query=search_query,
                     limit=request.limit,
-                    enable_ai_reranking=request.enable_ai_reranking,
+                    enable_ai_reranking=enable_ai_reranking,  # Use processed value
                     ai_weight=request.ai_weight,
                     ai_reranking_instructions=request.ai_reranking_instructions,
                     post_type_priority=request.post_type_priority
@@ -338,14 +375,14 @@ async def search(request: SearchRequest, http_request: Request):
                 answer = None
         else:
             # Regular search with AI reranking
-            # Debug logging for AI reranking parameter
-            logger.info(f"🔍 Search Request - enable_ai_reranking: {request.enable_ai_reranking} (type: {type(request.enable_ai_reranking).__name__})")
+            # Use the processed enable_ai_reranking value
+            logger.info(f"🔍 Search Request - enable_ai_reranking: {enable_ai_reranking} (processed)")
             logger.info(f"🔍 Search Request - ai_weight: {request.ai_weight}")
             
             results, search_metadata = await search_system.search(
                 query=search_query,
                 limit=request.limit,
-                enable_ai_reranking=request.enable_ai_reranking,
+                enable_ai_reranking=enable_ai_reranking,  # Use processed value
                 ai_weight=request.ai_weight,
                 ai_reranking_instructions=request.ai_reranking_instructions,
                 post_type_priority=request.post_type_priority

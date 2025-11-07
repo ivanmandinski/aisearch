@@ -67,13 +67,36 @@ Keep the rewritten query concise but comprehensive. Focus on terms that would ap
             
             result = response.choices[0].message.content.strip()
             
+            # CRITICAL FIX: Extract JSON from markdown code blocks if present
+            if "```json" in result:
+                result = result.split("```json")[1].split("```")[0].strip()
+            elif "```" in result:
+                # Try to extract JSON from generic code blocks
+                parts = result.split("```")
+                if len(parts) >= 2:
+                    # Take the middle part (between first and second ```)
+                    potential_json = parts[1].strip()
+                    if potential_json.startswith('{'):
+                        result = potential_json
+            
             # Try to parse JSON response
             try:
                 parsed_result = json.loads(result)
-                return parsed_result.get("rewritten_query", original_query)
+                rewritten = parsed_result.get("rewritten_query", original_query)
+                # Ensure we return a clean string, not JSON
+                if isinstance(rewritten, str) and len(rewritten.strip()) > 0:
+                    return rewritten
+                else:
+                    return original_query
             except json.JSONDecodeError:
-                # If JSON parsing fails, return the raw response
-                return result
+                # If JSON parsing fails, check if result is already a query string
+                # (sometimes LLM returns just the query without JSON)
+                if len(result) < 200 and not result.startswith('{'):
+                    # Looks like a query string, return it
+                    return result
+                # Otherwise, return original query to avoid malformed queries
+                logger.warning(f"Failed to parse query rewrite JSON, using original query")
+                return original_query
                 
         except Exception as e:
             logger.error(f"Error rewriting query: {e}")
@@ -474,6 +497,23 @@ Respond in JSON format:
     async def process_query_async(self, query: str) -> Dict[str, Any]:
         """Process a query asynchronously with multiple LLM operations."""
         try:
+            # CRITICAL FIX: Don't rewrite query if it's already malformed JSON
+            # This prevents double-processing and malformed queries
+            if query.startswith('```') or (query.strip().startswith('{') and query.strip().endswith('}')):
+                logger.warning(f"⚠️ Query appears to be malformed JSON, skipping rewriting: {query[:100]}")
+                return {
+                    "original_query": query,
+                    "rewritten_query": query,  # Return original, don't rewrite
+                    "expanded_queries": [query],
+                    "intent_classification": {
+                        "intent_type": "informational",
+                        "complexity": "moderate",
+                        "result_type": "article",
+                        "domain": "general",
+                        "time_sensitivity": "evergreen"
+                    }
+                }
+            
             # Run multiple operations concurrently
             tasks = [
                 asyncio.create_task(asyncio.to_thread(self.rewrite_query, query)),
@@ -482,6 +522,22 @@ Respond in JSON format:
             ]
             
             rewritten_query, expanded_queries, intent_classification = await asyncio.gather(*tasks)
+            
+            # CRITICAL FIX: Ensure rewritten_query is a string, not JSON
+            # Sometimes rewrite_query returns JSON string instead of just the query
+            if isinstance(rewritten_query, str) and rewritten_query.strip().startswith('{'):
+                try:
+                    import json
+                    parsed = json.loads(rewritten_query)
+                    if 'rewritten_query' in parsed:
+                        rewritten_query = parsed['rewritten_query']
+                        logger.info(f"✅ Extracted rewritten_query from JSON: {rewritten_query}")
+                except json.JSONDecodeError:
+                    pass  # Not JSON, use as-is
+            
+            # Ensure rewritten_query is a clean string
+            if not isinstance(rewritten_query, str) or len(rewritten_query.strip()) == 0:
+                rewritten_query = query  # Fallback to original
             
             return {
                 "original_query": query,

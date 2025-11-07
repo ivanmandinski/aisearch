@@ -465,7 +465,7 @@ class SimpleHybridSearch:
                 post_type_priority = intent_based_priority
                 logger.info(f"Using intent-based priority: {post_type_priority}")
             
-            # Step 1: Get candidates using TF-IDF with proper pagination
+            # Step 1: Get candidates using TF-IDF + Vector search with RRF
             # For pagination to work correctly, we need to get a larger set of results
             # and then apply offset/limit consistently
             
@@ -479,24 +479,46 @@ class SimpleHybridSearch:
             search_limit = max(initial_limit, offset + limit + RERANK_BUFFER_SIZE)  # Get extra to ensure we have enough
             
             # Perform TF-IDF search
-            candidates = []
+            tfidf_candidates = []
             
             # If we have TF-IDF fitted, use it for search
             if self.tfidf_matrix is not None and len(self.documents) > 0:
                 logger.info(f"Using TF-IDF search for '{query}' (getting {search_limit} candidates)")
-                candidates = self._tfidf_search(query, search_limit, 0)  # Always start from 0 for initial search
+                tfidf_candidates = self._tfidf_search(query, search_limit, 0)  # Always start from 0 for initial search
                 
                 # If TF-IDF returns poor results (low scores), add simple text search as backup
-                if len(candidates) < 3 or (candidates and candidates[0]['score'] < 0.1):
+                if len(tfidf_candidates) < 3 or (tfidf_candidates and tfidf_candidates[0]['score'] < 0.1):
                     logger.info(f"TF-IDF returned poor results, adding simple text search fallback for '{query}'")
                     simple_results = self._simple_text_search(query, search_limit // 2)
-                    candidates.extend(simple_results)
+                    tfidf_candidates.extend(simple_results)
             else:
                 # Fallback to simple text search
                 logger.info(f"Using simple text search for '{query}' (getting {search_limit} candidates)")
-                candidates = self._simple_text_search(query, search_limit)
+                tfidf_candidates = self._simple_text_search(query, search_limit)
             
-            # Sort candidates by score
+            # Perform Vector/Semantic search (if available)
+            vector_candidates = []
+            try:
+                vector_candidates = await self._vector_search(query, search_limit)
+                # Apply same boosting factors to vector results
+                for result in vector_candidates:
+                    field_boost = self._calculate_field_score(query, result)
+                    freshness_boost = self._calculate_freshness_boost(result.get('date', ''))
+                    category_tag_boost = self._calculate_category_tag_boost(query, result)
+                    result['score'] *= field_boost * freshness_boost * category_tag_boost
+            except Exception as e:
+                logger.warning(f"Vector search error: {e}, continuing with TF-IDF only")
+            
+            # Combine TF-IDF and Vector results using Reciprocal Rank Fusion (RRF)
+            if vector_candidates and len(vector_candidates) > 0:
+                logger.info(f"Combining {len(tfidf_candidates)} TF-IDF and {len(vector_candidates)} vector results using RRF")
+                candidates = self._reciprocal_rank_fusion(tfidf_candidates, vector_candidates, k=60)
+                logger.info(f"RRF combined to {len(candidates)} unique candidates")
+            else:
+                logger.info(f"Using TF-IDF results only ({len(tfidf_candidates)} candidates)")
+                candidates = tfidf_candidates
+            
+            # Sort candidates by score (RRF score if available, otherwise original score)
             candidates.sort(key=lambda x: x.get('score', 0), reverse=True)
             
             # Apply post type priority if specified
@@ -1231,19 +1253,20 @@ RULES:
                     logger.debug(f"Including result {i+1}: doc_idx={doc_idx}, score={score:.4f}")
                     doc = self.documents[doc_idx]
                     
-                    # FIELD BOOSTING: Titles are much more important than content
-                    # Check if query matches in title/excerpt (higher relevance)
-                    query_lower = query.lower()
-                    title_lower = doc['title'].lower()
-                    excerpt_lower = (doc.get('excerpt', '') or '').lower()
+                    # Apply multiple boosting factors
+                    # 1. Field-based boosting (improved phrase matching)
+                    field_boost = self._calculate_field_score(query, doc)
+                    score *= field_boost
                     
-                    # Boost score for exact title matches
-                    if query_lower in title_lower:
-                        score *= 1.5  # 50% boost for title matches
-                        logger.debug(f"Title match boost: {score:.4f}")
-                    elif query_lower in excerpt_lower:
-                        score *= 1.2  # 20% boost for excerpt matches
-                        logger.debug(f"Excerpt match boost: {score:.4f}")
+                    # 2. Freshness/recency boosting
+                    freshness_boost = self._calculate_freshness_boost(doc.get('date', ''))
+                    score *= freshness_boost
+                    
+                    # 3. Category/tag matching boost
+                    category_tag_boost = self._calculate_category_tag_boost(query, doc)
+                    score *= category_tag_boost
+                    
+                    logger.debug(f"Boosts applied - Field: {field_boost:.2f}, Freshness: {freshness_boost:.2f}, Category/Tag: {category_tag_boost:.2f}, Final: {score:.4f}")
                     
                     result = {
                         'id': doc['id'],
@@ -1490,6 +1513,16 @@ RULES:
                     score += 0.5
                 
                 if score > 0:
+                    # Normalize score to 0-1 range
+                    normalized_score = float(score) / 10.0
+                    
+                    # Apply boosting factors
+                    field_boost = self._calculate_field_score(query, doc)
+                    freshness_boost = self._calculate_freshness_boost(doc.get('date', ''))
+                    category_tag_boost = self._calculate_category_tag_boost(query, doc)
+                    
+                    final_score = normalized_score * field_boost * freshness_boost * category_tag_boost
+                    
                     result = {
                         'id': doc['id'],
                         'title': doc['title'],
@@ -1500,8 +1533,8 @@ RULES:
                         'author': doc.get('author', ''),
                         'categories': doc.get('categories', []),
                         'tags': doc.get('tags', []),
-                        'score': float(score) / 10.0,  # Normalize to 0-1 range
-                        'relevance': 'high' if score >= 5 else 'medium' if score >= 2 else 'low'
+                        'score': final_score,
+                        'relevance': 'high' if final_score >= 0.5 else 'medium' if final_score >= 0.2 else 'low'
                     }
                     results.append(result)
             
@@ -1513,6 +1546,231 @@ RULES:
             logger.error(f"Error in simple text search: {e}")
             return []
 
+    def _calculate_freshness_boost(self, doc_date: str) -> float:
+        """
+        Boost recent content (decay over time).
+        
+        Args:
+            doc_date: Document date string (ISO format)
+            
+        Returns:
+            Boost multiplier (1.0 = no boost, >1.0 = boosted)
+        """
+        if not doc_date:
+            return 1.0
+        
+        try:
+            from datetime import datetime, timezone
+            
+            # Parse date (handle various formats)
+            try:
+                if 'T' in doc_date:
+                    doc_datetime = datetime.fromisoformat(doc_date.replace('Z', '+00:00'))
+                else:
+                    doc_datetime = datetime.strptime(doc_date, '%Y-%m-%d')
+                    doc_datetime = doc_datetime.replace(tzinfo=timezone.utc)
+            except ValueError:
+                # Try other formats
+                try:
+                    doc_datetime = datetime.strptime(doc_date, '%Y-%m-%d %H:%M:%S')
+                    doc_datetime = doc_datetime.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    logger.warning(f"Could not parse date: {doc_date}, using no boost")
+                    return 1.0
+            
+            # Calculate days old
+            now = datetime.now(doc_datetime.tzinfo)
+            days_old = (now - doc_datetime).days
+            
+            # Boost: 1.5x for <30 days, 1.2x for <90 days, 1.1x for <365 days, 1.0x for older
+            if days_old < 30:
+                return 1.5
+            elif days_old < 90:
+                return 1.2
+            elif days_old < 365:
+                return 1.1
+            return 1.0
+            
+        except Exception as e:
+            logger.warning(f"Error calculating freshness boost: {e}")
+            return 1.0
+    
+    def _calculate_field_score(self, query: str, doc: Dict[str, Any]) -> float:
+        """
+        Calculate field-based relevance score with improved phrase matching.
+        
+        Args:
+            query: Search query
+            doc: Document dictionary
+            
+        Returns:
+            Boost multiplier
+        """
+        query_lower = query.lower().strip()
+        query_words = set(query_lower.split())
+        
+        title_lower = doc.get('title', '').lower()
+        excerpt_lower = (doc.get('excerpt', '') or '').lower()
+        content_lower = doc.get('content', '').lower()
+        
+        score = 0.0
+        
+        # Exact phrase match in title (highest priority)
+        if query_lower in title_lower:
+            score += 3.0
+        # All words in title (phrase match)
+        elif query_words and query_words.issubset(set(title_lower.split())):
+            score += 2.0
+        # Some words in title
+        elif any(word in title_lower for word in query_words if len(word) >= 3):
+            score += 1.0
+        
+        # Excerpt matches (medium priority)
+        if query_lower in excerpt_lower:
+            score += 1.5
+        elif any(word in excerpt_lower for word in query_words if len(word) >= 3):
+            score += 0.5
+        
+        # Content matches (lowest priority)
+        if any(word in content_lower for word in query_words if len(word) >= 3):
+            score += 0.2
+        
+        # Return boost multiplier (minimum 1.0)
+        return max(score, 1.0)
+    
+    def _calculate_category_tag_boost(self, query: str, doc: Dict[str, Any]) -> float:
+        """
+        Boost if query matches categories or tags.
+        
+        Args:
+            query: Search query
+            doc: Document dictionary
+            
+        Returns:
+            Boost multiplier (capped at 1.5x)
+        """
+        query_lower = query.lower().strip()
+        query_words = set(query_lower.split())
+        
+        boost = 1.0
+        
+        # Check categories
+        categories = doc.get('categories', [])
+        for cat in categories:
+            if isinstance(cat, dict):
+                cat_slug = cat.get('slug', '').lower()
+                cat_name = cat.get('name', '').lower()
+            else:
+                cat_slug = str(cat).lower()
+                cat_name = cat_slug
+            
+            if query_lower in cat_slug or query_lower in cat_name:
+                boost += 0.3
+            elif any(word in cat_slug or word in cat_name for word in query_words if len(word) >= 3):
+                boost += 0.15
+        
+        # Check tags
+        tags = doc.get('tags', [])
+        for tag in tags:
+            if isinstance(tag, dict):
+                tag_slug = tag.get('slug', '').lower()
+                tag_name = tag.get('name', '').lower()
+            else:
+                tag_slug = str(tag).lower()
+                tag_name = tag_slug
+            
+            if query_lower in tag_slug or query_lower in tag_name:
+                boost += 0.2
+            elif any(word in tag_slug or word in tag_name for word in query_words if len(word) >= 3):
+                boost += 0.1
+        
+        return min(boost, 1.5)  # Cap at 1.5x
+    
+    def _reciprocal_rank_fusion(self, results1: List[Dict[str, Any]], results2: List[Dict[str, Any]], k: int = 60) -> List[Dict[str, Any]]:
+        """
+        Combine two result lists using Reciprocal Rank Fusion (RRF).
+        
+        Args:
+            results1: First result list (e.g., TF-IDF results)
+            results2: Second result list (e.g., Vector results)
+            k: RRF constant (default 60)
+            
+        Returns:
+            Combined and reranked results
+        """
+        scores = {}
+        
+        # Score results from first list
+        for rank, result in enumerate(results1, 1):
+            doc_id = str(result.get('id', ''))
+            if doc_id not in scores:
+                scores[doc_id] = {'doc': result.copy(), 'rrf_score': 0.0}
+            scores[doc_id]['rrf_score'] += 1.0 / (k + rank)
+        
+        # Score results from second list
+        for rank, result in enumerate(results2, 1):
+            doc_id = str(result.get('id', ''))
+            if doc_id not in scores:
+                scores[doc_id] = {'doc': result.copy(), 'rrf_score': 0.0}
+            scores[doc_id]['rrf_score'] += 1.0 / (k + rank)
+        
+        # Sort by RRF score
+        combined = sorted(scores.values(), key=lambda x: x['rrf_score'], reverse=True)
+        
+        # Update scores in results
+        for item in combined:
+            item['doc']['rrf_score'] = item['rrf_score']
+            # Use RRF score as base score, but preserve original score for reference
+            if 'original_score' not in item['doc']:
+                item['doc']['original_score'] = item['doc'].get('score', 0.0)
+            item['doc']['score'] = item['rrf_score']
+        
+        return [item['doc'] for item in combined]
+    
+    async def _vector_search(self, query: str, limit: int) -> List[Dict[str, Any]]:
+        """
+        Perform vector/semantic search using embeddings.
+        
+        Args:
+            query: Search query
+            limit: Maximum number of results
+            
+        Returns:
+            List of search results
+        """
+        try:
+            if not self.qdrant_manager:
+                logger.debug("Qdrant manager not available, skipping vector search")
+                return []
+            
+            # Generate query embedding
+            query_embedding = await self._get_query_embedding_cached(query)
+            
+            # Check if embedding is valid (not all zeros)
+            if all(x == 0.0 for x in query_embedding):
+                logger.warning("Query embedding is all zeros, skipping vector search")
+                return []
+            
+            # Get sparse vector for hybrid search
+            sparse_vector = self._get_sparse_vector(query)
+            
+            # Perform hybrid search via Qdrant
+            logger.info(f"Performing vector search for '{query}' (limit={limit})")
+            vector_results = self.qdrant_manager.hybrid_search(
+                query=query,
+                dense_vector=query_embedding,
+                sparse_vector=sparse_vector,
+                limit=limit * 2,  # Get more for RRF combination
+                alpha=0.6  # 60% semantic, 40% keyword
+            )
+            
+            logger.info(f"Vector search returned {len(vector_results)} results")
+            return vector_results
+            
+        except Exception as e:
+            logger.warning(f"Vector search failed: {e}, continuing with TF-IDF only")
+            return []
+    
     def close(self):
         """Close the search system."""
         if self.qdrant_manager:
