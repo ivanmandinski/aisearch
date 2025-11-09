@@ -627,11 +627,21 @@ class WordPressContentFetcher:
                     logger.info(f"Completed fetching '{post_type}': {post_type_count} items indexed")
                     
                 except Exception as e:
-                    logger.error(f"Error fetching post type {post_type}: {e}")
+                    error_msg = str(e) if str(e) else f"{type(e).__name__} (no message)"
+                    error_type = type(e).__name__
+                    import traceback
+                    error_trace = traceback.format_exc()
+                    logger.error(f"Error fetching post type {post_type}: {error_type}: {error_msg}")
+                    logger.debug(f"Full traceback: {error_trace}")
                     continue
         
         except Exception as e:
-            logger.error(f"Error fetching post types: {e}")
+            error_msg = str(e) if str(e) else f"{type(e).__name__} (no message)"
+            error_type = type(e).__name__
+            import traceback
+            error_trace = traceback.format_exc()
+            logger.error(f"Error fetching post types: {error_type}: {error_msg}")
+            logger.debug(f"Full traceback: {error_trace}")
         
         # Log breakdown by type
         type_counts = {}

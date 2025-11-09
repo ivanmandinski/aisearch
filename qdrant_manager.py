@@ -37,39 +37,66 @@ class QdrantManager:
     
     def __init__(self) -> None:
         """Initialize Qdrant client and configuration."""
+        # Add timeout settings to prevent hanging
         self.client: QdrantClient = QdrantClient(
             url=settings.qdrant_url,
-            api_key=settings.qdrant_api_key
+            api_key=settings.qdrant_api_key,
+            timeout=30.0,  # 30 second timeout for operations
+            prefer_grpc=False  # Use HTTP instead of gRPC for better timeout handling
         )
         self.collection_name: str = settings.qdrant_collection_name
         self.embedding_dimension: int = settings.embedding_dimension
     
     def create_collection(self) -> bool:
         """Create the collection if it doesn't exist."""
-        try:
-            # Check if collection exists
-            collections = self.client.get_collections()
-            collection_names = [col.name for col in collections.collections]
-            
-            if self.collection_name in collection_names:
-                logger.info(f"Collection '{self.collection_name}' already exists")
-                return True
-            
-            # Create collection with simple vector configuration
-            self.client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=VectorParams(
-                    size=self.embedding_dimension,
-                    distance=Distance.COSINE
+        import time
+        max_retries = 3
+        retry_delay = 2
+        
+        for attempt in range(max_retries):
+            try:
+                # Check if collection exists with timeout handling
+                try:
+                    collections = self.client.get_collections()
+                    collection_names = [col.name for col in collections.collections]
+                    
+                    if self.collection_name in collection_names:
+                        logger.info(f"Collection '{self.collection_name}' already exists")
+                        return True
+                except Exception as check_e:
+                    logger.warning(f"Error checking collection existence (attempt {attempt + 1}/{max_retries}): {check_e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        raise
+                
+                # Create collection with simple vector configuration
+                self.client.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config=VectorParams(
+                        size=self.embedding_dimension,
+                        distance=Distance.COSINE
+                    )
                 )
-            )
-            
-            logger.info(f"Created collection '{self.collection_name}'")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error creating collection: {e}")
-            return False
+                
+                logger.info(f"Created collection '{self.collection_name}'")
+                return True
+                
+            except Exception as e:
+                error_msg = str(e)
+                error_type = type(e).__name__
+                logger.error(f"Error creating collection (attempt {attempt + 1}/{max_retries}): {error_type}: {error_msg}")
+                
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    logger.error(f"Failed to create collection after {max_retries} attempts")
+                    return False
+        
+        return False
     
     def delete_collection(self) -> bool:
         """Delete the collection."""
@@ -278,69 +305,85 @@ class QdrantManager:
     
     def get_collection_info(self) -> Dict[str, Any]:
         """Get information about the collection."""
-        try:
-            collection_info = self.client.get_collection(self.collection_name)
-            # Access vectors config properly - it's either a dict or a VectorParams object
+        import time
+        max_retries = 2
+        retry_delay = 1
+        
+        for attempt in range(max_retries):
             try:
-                if hasattr(collection_info.config.params.vectors, 'size'):
-                    # It's a VectorParams object
-                    vector_size = collection_info.config.params.vectors.size
-                elif isinstance(collection_info.config.params.vectors, dict):
-                    # It's a dict with "dense" key
-                    vector_size = collection_info.config.params.vectors.get("dense", {}).get("size", 0)
-                else:
+                collection_info = self.client.get_collection(self.collection_name)
+                # Access vectors config properly - it's either a dict or a VectorParams object
+                try:
+                    if hasattr(collection_info.config.params.vectors, 'size'):
+                        # It's a VectorParams object
+                        vector_size = collection_info.config.params.vectors.size
+                    elif isinstance(collection_info.config.params.vectors, dict):
+                        # It's a dict with "dense" key
+                        vector_size = collection_info.config.params.vectors.get("dense", {}).get("size", 0)
+                    else:
+                        vector_size = 0
+                except:
                     vector_size = 0
-            except:
-                vector_size = 0
-            
-            return {
-                "name": self.collection_name,
-                "vector_size": vector_size,
-                "vectors_count": collection_info.vectors_count,
-                "indexed_vectors_count": collection_info.indexed_vectors_count,
-                "points_count": collection_info.points_count,
-                "segments_count": collection_info.segments_count,
-                "status": collection_info.status
-            }
-        except Exception as e:
-            logger.error(f"Error getting collection info: {e}")
-            # Auto-create collection if missing
-            logger.info(f"Collection '{self.collection_name}' doesn't exist, attempting to create it...")
-            try:
-                if self.create_collection():
-                    logger.info(f"✅ Successfully created collection '{self.collection_name}'")
-                    # Try getting info again
-                    try:
-                        collection_info = self.client.get_collection(self.collection_name)
-                        # Use same logic as above for vector_size
-                        try:
-                            if hasattr(collection_info.config.params.vectors, 'size'):
-                                vector_size = collection_info.config.params.vectors.size
-                            elif isinstance(collection_info.config.params.vectors, dict):
-                                vector_size = collection_info.config.params.vectors.get("dense", {}).get("size", 0)
-                            else:
-                                vector_size = 0
-                        except:
-                            vector_size = 0
-                        
-                        return {
-                            "name": self.collection_name,
-                            "vector_size": vector_size,
-                            "vectors_count": collection_info.vectors_count,
-                            "indexed_vectors_count": collection_info.indexed_vectors_count,
-                            "points_count": collection_info.points_count,
-                            "segments_count": collection_info.segments_count,
-                            "status": collection_info.status
-                        }
-                    except Exception as retry_e:
-                        logger.error(f"Error getting collection info after creation: {retry_e}")
-                        return {}
+                
+                return {
+                    "name": self.collection_name,
+                    "vector_size": vector_size,
+                    "vectors_count": collection_info.vectors_count,
+                    "indexed_vectors_count": collection_info.indexed_vectors_count,
+                    "points_count": collection_info.points_count,
+                    "segments_count": collection_info.segments_count,
+                    "status": collection_info.status
+                }
+            except Exception as e:
+                error_msg = str(e) if str(e) else f"{type(e).__name__} (no message)"
+                error_type = type(e).__name__
+                logger.warning(f"Error getting collection info (attempt {attempt + 1}/{max_retries}): {error_type}: {error_msg}")
+                
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
                 else:
-                    logger.error(f"Failed to create collection '{self.collection_name}'")
-                    return {}
-            except Exception as create_e:
-                logger.error(f"Error during auto-creation: {create_e}")
-                return {}
+                    # Final attempt failed, try auto-create
+                    logger.error(f"Error getting collection info after {max_retries} attempts: {error_type}: {error_msg}")
+                    # Auto-create collection if missing
+                    logger.info(f"Collection '{self.collection_name}' doesn't exist, attempting to create it...")
+                    try:
+                        if self.create_collection():
+                            logger.info(f"✅ Successfully created collection '{self.collection_name}'")
+                            # Try getting info again
+                            try:
+                                collection_info = self.client.get_collection(self.collection_name)
+                                # Use same logic as above for vector_size
+                                try:
+                                    if hasattr(collection_info.config.params.vectors, 'size'):
+                                        vector_size = collection_info.config.params.vectors.size
+                                    elif isinstance(collection_info.config.params.vectors, dict):
+                                        vector_size = collection_info.config.params.vectors.get("dense", {}).get("size", 0)
+                                    else:
+                                        vector_size = 0
+                                except:
+                                    vector_size = 0
+                                
+                                return {
+                                    "name": self.collection_name,
+                                    "vector_size": vector_size,
+                                    "vectors_count": collection_info.vectors_count,
+                                    "indexed_vectors_count": collection_info.indexed_vectors_count,
+                                    "points_count": collection_info.points_count,
+                                    "segments_count": collection_info.segments_count,
+                                    "status": collection_info.status
+                                }
+                            except Exception as retry_e:
+                                logger.error(f"Error getting collection info after creation: {retry_e}")
+                                return {}
+                        else:
+                            logger.error(f"Failed to create collection '{self.collection_name}'")
+                            return {}
+                    except Exception as create_e:
+                        logger.error(f"Error during auto-creation: {create_e}")
+                        return {}
+        
+        return {}
     
     def search_by_filters(
         self, 
