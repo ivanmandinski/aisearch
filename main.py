@@ -87,6 +87,7 @@ wp_client = None
 class SearchRequest(BaseModel):
     query: str = Field(..., description="Search query")
     limit: int = Field(default=10, ge=1, le=50, description="Maximum number of results")
+    offset: int = Field(default=0, ge=0, description="Number of results to skip (for pagination)")
     include_answer: bool = Field(default=False, description="Whether to include LLM-generated answer")
     filters: Optional[Dict[str, Any]] = Field(default=None, description="Search filters")
     ai_instructions: Optional[str] = Field(default=None, description="Custom AI instructions for answer generation")
@@ -284,7 +285,7 @@ async def search(request: SearchRequest, http_request: Request):
             validate_search_params(
                 query=request.query,
                 limit=request.limit,
-                offset=0
+                offset=request.offset
             )
         except ValidationError as e:
             logger.warning(f"Search validation failed: {e.message}")
@@ -375,7 +376,8 @@ async def search(request: SearchRequest, http_request: Request):
                 # Use processed enable_ai_reranking value even for answer generation
                 result = await search_system.search_with_answer(
                     search_query, 
-                    limit=request.limit, 
+                    limit=request.limit,
+                    offset=request.offset,
                     custom_instructions=request.ai_instructions,
                     enable_ai_reranking=enable_ai_reranking  # Use processed value
                 )
@@ -387,6 +389,7 @@ async def search(request: SearchRequest, http_request: Request):
                 results, search_metadata = await search_system.search(
                     query=search_query,
                     limit=request.limit,
+                    offset=request.offset,
                     enable_ai_reranking=enable_ai_reranking,  # Use processed value
                     ai_weight=request.ai_weight,
                     ai_reranking_instructions=request.ai_reranking_instructions,
@@ -402,6 +405,7 @@ async def search(request: SearchRequest, http_request: Request):
             results, search_metadata = await search_system.search(
                 query=search_query,
                 limit=request.limit,
+                offset=request.offset,
                 enable_ai_reranking=enable_ai_reranking,  # Use processed value
                 ai_weight=request.ai_weight,
                 ai_reranking_instructions=request.ai_reranking_instructions,
@@ -456,6 +460,15 @@ async def search(request: SearchRequest, http_request: Request):
         
         processing_time = (datetime.utcnow() - start_time).total_seconds()
         
+        # Get total results from search metadata (if available) or use current results count
+        total_results_available = search_metadata.get('total_results', len(results))
+        
+        # Calculate pagination info
+        current_offset = request.offset
+        current_limit = request.limit
+        next_offset = current_offset + len(results)
+        has_more = next_offset < total_results_available and len(results) >= current_limit
+        
         # Build metadata
         metadata = {
             "query": request.query,
@@ -468,14 +481,23 @@ async def search(request: SearchRequest, http_request: Request):
             **search_metadata  # Include AI reranking metadata
         }
         
+        # Add pagination metadata
+        pagination = {
+            "offset": current_offset,
+            "limit": current_limit,
+            "has_more": has_more,
+            "next_offset": next_offset if has_more else None,
+            "total_results": total_results_available
+        }
+        
         # Add zero-result handling data if applicable
         if zero_result_data:
             metadata["zero_result_handling"] = zero_result_data
         
-        # Return standardized success response
+        # Return standardized success response with pagination
         return JSONResponse(
             content=create_success_response(
-                data={"results": results},
+                data={"results": results, "pagination": pagination},
                 message="Search completed successfully" if results else "No results found",
                 metadata=metadata
             )

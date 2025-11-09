@@ -208,3 +208,4 @@ Fixed two critical issues:
 
 The search system should now properly use AI reranking when enabled in settings!
 
+
