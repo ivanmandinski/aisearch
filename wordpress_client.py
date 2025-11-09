@@ -32,7 +32,7 @@ class WordPressContentFetcher:
                 keepalive_expiry=30.0
             ),
             headers={"User-Agent": "HybridSearchBot/1.0"},
-            http2=True  # Enable HTTP/2 for better performance
+            http2=False  # Disable HTTP/2 to avoid h2 dependency issues
         )
     
     async def fetch_all_posts(self) -> List[Dict[str, Any]]:

@@ -41,16 +41,55 @@ class QdrantManager:
         self.client: QdrantClient = QdrantClient(
             url=settings.qdrant_url,
             api_key=settings.qdrant_api_key,
-            timeout=30.0,  # 30 second timeout for operations
+            timeout=10.0,  # Reduced to 10 seconds for faster failure detection
             prefer_grpc=False  # Use HTTP instead of gRPC for better timeout handling
         )
         self.collection_name: str = settings.qdrant_collection_name
         self.embedding_dimension: int = settings.embedding_dimension
+        self._is_available: Optional[bool] = None  # Cache availability status
+        self._last_health_check: float = 0.0  # Track last health check time
+        self._health_check_interval: float = 60.0  # Check health every 60 seconds
+    
+    def check_health(self) -> bool:
+        """
+        Check if Qdrant is available and responsive.
+        Uses cached result if checked recently.
+        
+        Returns:
+            True if Qdrant is available, False otherwise
+        """
+        import time
+        current_time = time.time()
+        
+        # Use cached result if checked recently
+        if self._is_available is not None and (current_time - self._last_health_check) < self._health_check_interval:
+            return self._is_available
+        
+        # Perform health check
+        try:
+            # Try a simple operation with short timeout
+            self.client.get_collections()
+            self._is_available = True
+            self._last_health_check = current_time
+            logger.debug(f"Qdrant health check passed: {settings.qdrant_url}")
+            return True
+        except Exception as e:
+            error_type = type(e).__name__
+            error_msg = str(e) if str(e) else "unknown error"
+            logger.warning(f"Qdrant health check failed ({error_type}): {error_msg}")
+            self._is_available = False
+            self._last_health_check = current_time
+            return False
     
     def create_collection(self) -> bool:
         """Create the collection if it doesn't exist."""
+        # Check health first
+        if not self.check_health():
+            logger.warning(f"Qdrant is unavailable at {settings.qdrant_url}, cannot create collection")
+            return False
+        
         import time
-        max_retries = 3
+        max_retries = 2  # Reduced retries since we check health first
         retry_delay = 2
         
         for attempt in range(max_retries):
@@ -64,7 +103,12 @@ class QdrantManager:
                         logger.info(f"Collection '{self.collection_name}' already exists")
                         return True
                 except Exception as check_e:
-                    logger.warning(f"Error checking collection existence (attempt {attempt + 1}/{max_retries}): {check_e}")
+                    error_msg = str(check_e) if str(check_e) else f"{type(check_e).__name__} (no message)"
+                    if 'timeout' in error_msg.lower() or 'timed out' in error_msg.lower():
+                        logger.error(f"Qdrant timeout while checking collection existence: {error_msg}")
+                        self._is_available = False
+                        return False
+                    logger.warning(f"Error checking collection existence (attempt {attempt + 1}/{max_retries}): {error_msg}")
                     if attempt < max_retries - 1:
                         time.sleep(retry_delay)
                         continue
@@ -84,8 +128,15 @@ class QdrantManager:
                 return True
                 
             except Exception as e:
-                error_msg = str(e)
+                error_msg = str(e) if str(e) else f"{type(e).__name__} (no message)"
                 error_type = type(e).__name__
+                
+                # Mark as unavailable if it's a timeout
+                if 'timeout' in error_msg.lower() or 'timed out' in error_msg.lower():
+                    logger.error(f"Qdrant timeout while creating collection: {error_msg}")
+                    self._is_available = False
+                    return False
+                
                 logger.error(f"Error creating collection (attempt {attempt + 1}/{max_retries}): {error_type}: {error_msg}")
                 
                 if attempt < max_retries - 1:
@@ -156,6 +207,11 @@ class QdrantManager:
     
     def upsert_documents(self, documents: List[Dict[str, Any]]) -> bool:
         """Insert or update documents in the collection."""
+        # Check health first
+        if not self.check_health():
+            logger.warning(f"Qdrant is unavailable, skipping document upsert")
+            return False
+        
         try:
             points = []
             
@@ -243,6 +299,11 @@ class QdrantManager:
             limit: Maximum number of results
             alpha: Weight for dense vs sparse (0.0 = sparse only, 1.0 = dense only)
         """
+        # Check health first
+        if not self.check_health():
+            logger.debug(f"Qdrant is unavailable, returning empty results for hybrid search")
+            return []
+        
         try:
             # Perform dense search
             dense_results = self.client.search(
@@ -305,8 +366,13 @@ class QdrantManager:
     
     def get_collection_info(self) -> Dict[str, Any]:
         """Get information about the collection."""
+        # Check health first
+        if not self.check_health():
+            logger.warning(f"Qdrant is unavailable at {settings.qdrant_url}, skipping collection info")
+            return {}
+        
         import time
-        max_retries = 2
+        max_retries = 1  # Reduced retries since we check health first
         retry_delay = 1
         
         for attempt in range(max_retries):
@@ -337,50 +403,59 @@ class QdrantManager:
             except Exception as e:
                 error_msg = str(e) if str(e) else f"{type(e).__name__} (no message)"
                 error_type = type(e).__name__
+                
+                # Mark as unavailable if it's a timeout or connection error
+                if 'timeout' in error_msg.lower() or 'timed out' in error_msg.lower() or 'connection' in error_msg.lower():
+                    logger.error(f"Qdrant connection failed ({error_type}): {error_msg}")
+                    self._is_available = False
+                    return {}
+                
                 logger.warning(f"Error getting collection info (attempt {attempt + 1}/{max_retries}): {error_type}: {error_msg}")
                 
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
                     continue
                 else:
-                    # Final attempt failed, try auto-create
-                    logger.error(f"Error getting collection info after {max_retries} attempts: {error_type}: {error_msg}")
-                    # Auto-create collection if missing
-                    logger.info(f"Collection '{self.collection_name}' doesn't exist, attempting to create it...")
-                    try:
-                        if self.create_collection():
-                            logger.info(f"✅ Successfully created collection '{self.collection_name}'")
-                            # Try getting info again
-                            try:
-                                collection_info = self.client.get_collection(self.collection_name)
-                                # Use same logic as above for vector_size
+                    # Final attempt failed, try auto-create only if it's not a timeout
+                    if 'timeout' not in error_msg.lower() and 'timed out' not in error_msg.lower():
+                        logger.info(f"Collection '{self.collection_name}' doesn't exist, attempting to create it...")
+                        try:
+                            if self.create_collection():
+                                logger.info(f"✅ Successfully created collection '{self.collection_name}'")
+                                # Try getting info again
                                 try:
-                                    if hasattr(collection_info.config.params.vectors, 'size'):
-                                        vector_size = collection_info.config.params.vectors.size
-                                    elif isinstance(collection_info.config.params.vectors, dict):
-                                        vector_size = collection_info.config.params.vectors.get("dense", {}).get("size", 0)
-                                    else:
+                                    collection_info = self.client.get_collection(self.collection_name)
+                                    # Use same logic as above for vector_size
+                                    try:
+                                        if hasattr(collection_info.config.params.vectors, 'size'):
+                                            vector_size = collection_info.config.params.vectors.size
+                                        elif isinstance(collection_info.config.params.vectors, dict):
+                                            vector_size = collection_info.config.params.vectors.get("dense", {}).get("size", 0)
+                                        else:
+                                            vector_size = 0
+                                    except:
                                         vector_size = 0
-                                except:
-                                    vector_size = 0
-                                
-                                return {
-                                    "name": self.collection_name,
-                                    "vector_size": vector_size,
-                                    "vectors_count": collection_info.vectors_count,
-                                    "indexed_vectors_count": collection_info.indexed_vectors_count,
-                                    "points_count": collection_info.points_count,
-                                    "segments_count": collection_info.segments_count,
-                                    "status": collection_info.status
-                                }
-                            except Exception as retry_e:
-                                logger.error(f"Error getting collection info after creation: {retry_e}")
+                                    
+                                    return {
+                                        "name": self.collection_name,
+                                        "vector_size": vector_size,
+                                        "vectors_count": collection_info.vectors_count,
+                                        "indexed_vectors_count": collection_info.indexed_vectors_count,
+                                        "points_count": collection_info.points_count,
+                                        "segments_count": collection_info.segments_count,
+                                        "status": collection_info.status
+                                    }
+                                except Exception as retry_e:
+                                    logger.error(f"Error getting collection info after creation: {retry_e}")
+                                    return {}
+                            else:
+                                logger.error(f"Failed to create collection '{self.collection_name}'")
                                 return {}
-                        else:
-                            logger.error(f"Failed to create collection '{self.collection_name}'")
+                        except Exception as create_e:
+                            logger.error(f"Error during auto-creation: {create_e}")
                             return {}
-                    except Exception as create_e:
-                        logger.error(f"Error during auto-creation: {create_e}")
+                    else:
+                        logger.error(f"Qdrant timeout - cannot get collection info")
                         return {}
         
         return {}
