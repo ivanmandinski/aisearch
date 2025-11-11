@@ -113,6 +113,9 @@ class SearchResponse(BaseModel):
 class IndexRequest(BaseModel):
     force_reindex: bool = Field(default=False, description="Force reindexing even if index exists")
     post_types: Optional[List[str]] = Field(default=None, description="Specific post types to index (None = all)")
+    wordpress_api_url: Optional[str] = Field(default=None, description="Override WordPress REST API endpoint URL")
+    wordpress_username: Optional[str] = Field(default=None, description="Override WordPress API username")
+    wordpress_password: Optional[str] = Field(default=None, description="Override WordPress API password (application password recommended)")
 
 
 class IndexResponse(BaseModel):
@@ -527,6 +530,9 @@ async def index_content(request: IndexRequest, background_tasks: BackgroundTasks
     """Index WordPress content."""
     start_time = datetime.utcnow()
     
+    override_username = request.wordpress_username.strip() if request.wordpress_username else ""
+    override_password = request.wordpress_password.strip() if request.wordpress_password else ""
+    
     try:
         # Check if services are initialized
         if not search_system:
@@ -536,19 +542,6 @@ async def index_content(request: IndexRequest, background_tasks: BackgroundTasks
                 content={
                     "success": False,
                     "message": "Search service not initialized. Check Railway logs.",
-                    "indexed_count": 0,
-                    "total_count": 0,
-                    "processing_time": 0
-                }
-            )
-        
-        if not wp_client:
-            logger.error("WordPress client not initialized")
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "success": False,
-                    "message": "WordPress service not initialized. Check Railway logs.",
                     "indexed_count": 0,
                     "total_count": 0,
                     "processing_time": 0
@@ -572,6 +565,66 @@ async def index_content(request: IndexRequest, background_tasks: BackgroundTasks
         except Exception as e:
             logger.warning(f"Could not get stats: {e}")
         
+        # Determine which WordPress endpoint to use
+        fetcher = wp_client
+        temporary_client: Optional[WordPressContentFetcher] = None
+        override_url = (request.wordpress_api_url or "").strip() if request.wordpress_api_url else ""
+        
+        use_override_credentials = bool(override_username and override_password)
+        if override_url or use_override_credentials:
+            base_for_override = override_url
+            if not base_for_override:
+                base_for_override = settings.wordpress_api_url or (wp_client.base_url if wp_client else "")
+            if not base_for_override:
+                logger.error("No base URL available for WordPress content fetcher")
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "success": False,
+                        "message": "WordPress API URL not configured.",
+                        "indexed_count": 0,
+                        "total_count": 0,
+                        "processing_time": 0
+                    }
+                )
+            log_message = f"Using WordPress API URL: {base_for_override}"
+            if override_url:
+                logger.info(log_message)
+            try:
+                kwargs = {}
+                if use_override_credentials:
+                    kwargs["username"] = override_username
+                    kwargs["password"] = override_password
+                    logger.info("Applying override WordPress credentials for indexing request")
+                temporary_client = WordPressContentFetcher(base_url=base_for_override, **kwargs)
+                fetcher = temporary_client
+            except Exception as e:
+                logger.error(f"Failed to initialize WordPress fetcher for URL '{base_for_override}': {e}", exc_info=True)
+                processing_time = (datetime.utcnow() - start_time).total_seconds()
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "success": False,
+                        "message": f"Invalid WordPress API configuration: {str(e)}",
+                        "indexed_count": 0,
+                        "total_count": 0,
+                        "processing_time": processing_time
+                    }
+                )
+        else:
+            if not wp_client:
+                logger.error("WordPress client not initialized and no override provided")
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "success": False,
+                        "message": "WordPress service not initialized. Provide an override URL or configure the default endpoint.",
+                        "indexed_count": 0,
+                        "total_count": 0,
+                        "processing_time": 0
+                    }
+                )
+        
         # Fetch content from WordPress
         logger.info("Fetching content from WordPress...")
         if request.post_types:
@@ -580,7 +633,7 @@ async def index_content(request: IndexRequest, background_tasks: BackgroundTasks
             logger.info("Fetching all available post types")
             
         try:
-            documents = await wp_client.get_all_content(request.post_types)
+            documents = await fetcher.get_all_content(request.post_types)
             logger.info(f"Fetched {len(documents) if documents else 0} documents from WordPress")
         except Exception as e:
             logger.error(f"Failed to fetch WordPress content: {e}", exc_info=True)
@@ -595,6 +648,12 @@ async def index_content(request: IndexRequest, background_tasks: BackgroundTasks
                     "processing_time": processing_time
                 }
             )
+        finally:
+            if temporary_client:
+                try:
+                    await temporary_client.close()
+                except Exception as e:
+                    logger.warning(f"Failed to close temporary WordPress client: {e}")
         
         if not documents:
             processing_time = (datetime.utcnow() - start_time).total_seconds()

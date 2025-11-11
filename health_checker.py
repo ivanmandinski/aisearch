@@ -199,9 +199,22 @@ class HealthChecker:
             from wordpress_client import WordPressContentFetcher
             
             wp_client = WordPressContentFetcher()
+            base_api_url = (wp_client.base_url or "").strip()
             
-            # Test with a simple request
-            test_url = wp_client.base_url.replace('/wp-json/wp/v2', '')
+            if not base_api_url:
+                return HealthCheck(
+                    name="wordpress",
+                    status=HealthStatus.UNKNOWN,
+                    message="WordPress API URL not configured",
+                    response_time=time.time() - start_time,
+                    details={"wordpress_api_url": base_api_url},
+                    timestamp=datetime.utcnow()
+                )
+            
+            test_url = base_api_url
+            if '/wp-json' in test_url:
+                test_url = test_url.split('/wp-json')[0]
+            test_url = test_url.rstrip('/')
             
             import httpx
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -228,7 +241,7 @@ class HealthChecker:
             )
             
         except Exception as e:
-            logger.error(f"WordPress check failed: {e}")
+            logger.error("WordPress check failed: %r", e)
             return HealthCheck(
                 name="wordpress",
                 status=HealthStatus.UNHEALTHY,

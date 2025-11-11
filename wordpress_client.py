@@ -14,14 +14,22 @@ logger = logging.getLogger(__name__)
 class WordPressContentFetcher:
     """Fetches and processes content from WordPress REST API."""
     
-    def __init__(self):
-        self.base_url = settings.wordpress_api_url
-        # Only use auth if credentials are provided
-        auth = None
-        if settings.wordpress_username and settings.wordpress_password and \
-           settings.wordpress_username != "your_wp_username" and \
-           settings.wordpress_password != "your_wp_app_password":
-            auth = (settings.wordpress_username, settings.wordpress_password)
+    def __init__(self, base_url: Optional[str] = None, username: Optional[str] = None, password: Optional[str] = None):
+        resolved_base = base_url or settings.wordpress_api_url or ""
+        self.base_url = resolved_base.rstrip('/')
+        
+        if not self.base_url:
+            logger.warning("WordPressContentFetcher initialized without a base URL")
+        
+        resolved_username = username if username is not None else settings.wordpress_username
+        resolved_password = password if password is not None else settings.wordpress_password
+        
+        if resolved_username in (None, "", "your_wp_username"):
+            resolved_username = ""
+        if resolved_password in (None, "", "your_wp_app_password"):
+            resolved_password = ""
+        
+        auth = (resolved_username, resolved_password) if resolved_username and resolved_password else None
         
         self.client = httpx.AsyncClient(
             auth=auth,
