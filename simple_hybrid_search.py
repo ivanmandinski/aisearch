@@ -2,7 +2,9 @@
 Simplified hybrid search implementation without complex LlamaIndex dependencies.
 """
 import logging
+import re
 from typing import List, Dict, Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 import httpx
 import asyncio
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -10,6 +12,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import json
 from config import settings
+from query_analysis import analyze_query
 from constants import (
     EMBEDDING_DIMENSION,
     TFIDF_MAX_FEATURES,
@@ -71,6 +74,7 @@ class SimpleHybridSearch:
         # Use _embedding_model as private attribute, accessed via property
         self._embedding_model = None
         self._embedding_model_loaded = False
+        self._last_query_analysis: Optional[Dict[str, Any]] = None
         
         # OPTIMIZATION: Cache query embeddings (queries repeat often)
         self._query_embedding_cache = {}
@@ -399,7 +403,8 @@ class SimpleHybridSearch:
         enable_ai_reranking: bool = True,
         ai_weight: float = 0.7,
         ai_reranking_instructions: str = "",
-        post_type_priority: Optional[List[str]] = None
+        post_type_priority: Optional[List[str]] = None,
+        behavioral_signals: Optional[Dict[str, Any]] = None,
     ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
         Perform search with optional AI reranking.
@@ -427,9 +432,15 @@ class SimpleHybridSearch:
             
             logger.info(f"Search request: query='{query}', offset={offset}, limit={limit}")
             
-            # Step 0.5: Detect query intent
-            detected_intent = self.detect_query_intent(query)
-            logger.info(f"🎯 Query intent detected: {detected_intent}")
+            # Step 0.5: Analyze query intent and entities
+            query_analysis = analyze_query(query)
+            detected_intent = query_analysis.get('intent', 'general')
+            intent_confidence = query_analysis.get('confidence', 0.0)
+            self._last_query_analysis = query_analysis
+            logger.info(
+                f"🎯 Query intent detected: {detected_intent} "
+                f"(confidence={intent_confidence:.2f}) | entities={query_analysis.get('entities', {})}"
+            )
             
             # Generate intent-based instructions and combine with user's custom instructions
             intent_instructions = self._generate_intent_based_instructions(query, detected_intent)
@@ -442,6 +453,11 @@ class SimpleHybridSearch:
                 # Use intent-based instructions only
                 ai_reranking_instructions = intent_instructions
                 logger.info(f"Using intent-based instructions: {detected_intent}")
+            
+            maps_input = behavioral_signals if settings.enable_ctr_boost else None
+            behavioral_maps = self._prepare_behavioral_maps(maps_input)
+            ctr_map = behavioral_maps.get('ctr', {})
+            behavioral_enabled = settings.enable_ctr_boost and bool(ctr_map)
             
             # Apply intent-based post type priority
             intent_based_priority = None
@@ -484,17 +500,17 @@ class SimpleHybridSearch:
             # If we have TF-IDF fitted, use it for search
             if self.tfidf_matrix is not None and len(self.documents) > 0:
                 logger.info(f"Using TF-IDF search for '{query}' (getting {search_limit} candidates)")
-                tfidf_candidates = self._tfidf_search(query, search_limit, 0)  # Always start from 0 for initial search
+                tfidf_candidates = self._tfidf_search(query, search_limit, 0, query_analysis, behavioral_maps)  # Always start from 0 for initial search
                 
                 # If TF-IDF returns poor results (low scores), add simple text search as backup
                 if len(tfidf_candidates) < 3 or (tfidf_candidates and tfidf_candidates[0]['score'] < 0.1):
                     logger.info(f"TF-IDF returned poor results, adding simple text search fallback for '{query}'")
-                    simple_results = self._simple_text_search(query, search_limit // 2)
+                    simple_results = self._simple_text_search(query, search_limit // 2, query_analysis, behavioral_maps)
                     tfidf_candidates.extend(simple_results)
             else:
                 # Fallback to simple text search
                 logger.info(f"Using simple text search for '{query}' (getting {search_limit} candidates)")
-                tfidf_candidates = self._simple_text_search(query, search_limit)
+                tfidf_candidates = self._simple_text_search(query, search_limit, query_analysis, behavioral_maps)
             
             # Perform Vector/Semantic search (if available)
             vector_candidates = []
@@ -502,10 +518,31 @@ class SimpleHybridSearch:
                 vector_candidates = await self._vector_search(query, search_limit)
                 # Apply same boosting factors to vector results
                 for result in vector_candidates:
-                    field_boost = self._calculate_field_score(query, result)
+                    field_boost = self._calculate_field_score(query, result, query_analysis)
                     freshness_boost = self._calculate_freshness_boost(result.get('date', ''))
                     category_tag_boost = self._calculate_category_tag_boost(query, result)
-                    result['score'] *= field_boost * freshness_boost * category_tag_boost
+                    heading_anchor_boost = self._calculate_heading_anchor_boost(query, result)
+                    taxonomy_depth_boost = self._calculate_taxonomy_depth_boost(result)
+                    behavioral_boost = self._calculate_behavioral_boost(result, behavioral_maps)
+                    result['score'] *= (
+                        field_boost
+                        * freshness_boost
+                        * category_tag_boost
+                        * heading_anchor_boost
+                        * taxonomy_depth_boost
+                        * behavioral_boost
+                    )
+                    meta = result.get('meta') if isinstance(result.get('meta'), dict) else {}
+                    meta.setdefault('boost_debug', {})
+                    meta['boost_debug'].update({
+                        'field': round(field_boost, 3),
+                        'freshness': round(freshness_boost, 3),
+                        'category_tag': round(category_tag_boost, 3),
+                        'heading_anchor': round(heading_anchor_boost, 3),
+                        'taxonomy_depth': round(taxonomy_depth_boost, 3),
+                        'behavioral': round(behavioral_boost, 3),
+                    })
+                    result['meta'] = meta
             except Exception as e:
                 logger.warning(f"Vector search error: {e}, continuing with TF-IDF only")
             
@@ -527,7 +564,15 @@ class SimpleHybridSearch:
                 candidates = self._apply_post_type_priority(candidates, post_type_priority)
             
             if not candidates:
-                return [], {'ai_reranking_used': False, 'message': 'No results found', 'total_results': 0}
+                return [], {
+                    'ai_reranking_used': False,
+                    'message': 'No results found',
+                    'total_results': 0,
+                    'query_context': query_analysis,
+                    'query_intent': detected_intent,
+                    'intent_instructions': intent_instructions if intent_instructions else None,
+                    'behavioral_applied': behavioral_enabled,
+                }
             
             # Step 2: AI Reranking (if enabled and LLM client available)
             # Ensure enable_ai_reranking is a proper boolean
@@ -576,7 +621,8 @@ class SimpleHybridSearch:
                             results=top_candidates,
                             custom_instructions=ai_reranking_instructions,
                             ai_weight=ai_weight,
-                            post_type_priority=post_type_priority
+                            post_type_priority=post_type_priority,
+                            query_context=query_analysis
                         )
                         
                         reranked = reranking_result['results']
@@ -588,6 +634,9 @@ class SimpleHybridSearch:
                         # Add query intent info for admin tooltips
                         metadata['query_intent'] = detected_intent
                         metadata['intent_instructions'] = intent_instructions if intent_instructions else None
+                        metadata['query_context'] = query_analysis
+                        metadata['behavioral_applied'] = behavioral_enabled
+                        metadata['behavioral_signals'] = behavioral_signals
                         
                         # Apply offset and return top N after reranking
                         paginated_results = reranked[offset:offset + limit]
@@ -634,7 +683,12 @@ class SimpleHybridSearch:
                         return paginated_results, {
                             'ai_reranking_used': False,
                             'reason': f'AI reranking failed: {str(e)}',
-                            'total_results': len(candidates)
+                            'total_results': len(candidates),
+                            'query_context': query_analysis,
+                            'query_intent': detected_intent,
+                            'intent_instructions': intent_instructions if intent_instructions else None,
+                            'behavioral_applied': behavioral_enabled,
+                            'behavioral_signals': behavioral_signals,
                         }
                 else:
                     # Skip reranking due to high TF-IDF confidence - return TF-IDF results
@@ -657,7 +711,12 @@ class SimpleHybridSearch:
                     return paginated_results, {
                         'ai_reranking_used': False,
                         'reason': 'Skipped - high TF-IDF confidence',
-                        'total_results': len(candidates)
+                        'total_results': len(candidates),
+                        'query_context': query_analysis,
+                        'query_intent': detected_intent,
+                        'intent_instructions': intent_instructions if intent_instructions else None,
+                        'behavioral_applied': behavioral_enabled,
+                        'behavioral_signals': behavioral_signals,
                     }
             else:
                 if not enable_ai_reranking:
@@ -698,18 +757,44 @@ class SimpleHybridSearch:
             return paginated_results, {
                 'ai_reranking_used': False,
                 'reason': disable_reason,
-                'total_results': len(candidates)
+                'total_results': len(candidates),
+                'query_context': query_analysis,
+                'query_intent': detected_intent,
+            'intent_instructions': intent_instructions if intent_instructions else None,
+            'behavioral_applied': behavioral_enabled,
+            'behavioral_signals': behavioral_signals,
             }
             
         except Exception as e:
             logger.error(f"Error in search: {e}")
-            return [], {'error': str(e), 'total_results': 0}
+            return [], {
+                'error': str(e),
+                'total_results': 0,
+                'query_context': query_analysis if 'query_analysis' in locals() else None,
+            'query_intent': detected_intent if 'detected_intent' in locals() else None,
+            'behavioral_applied': behavioral_enabled if 'behavioral_enabled' in locals() else False,
+            'behavioral_signals': behavioral_signals if 'behavioral_signals' in locals() else None,
+            }
     
-    async def search_with_answer(self, query: str, limit: int = 5, offset: int = 0, custom_instructions: str = "", enable_ai_reranking: bool = True) -> Dict[str, Any]:
+    async def search_with_answer(
+        self,
+        query: str,
+        limit: int = 5,
+        offset: int = 0,
+        custom_instructions: str = "",
+        enable_ai_reranking: bool = True,
+        behavioral_signals: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Search and generate AI answer."""
         try:
             # Get search results with AI reranking if enabled
-            results, search_metadata = await self.search(query, limit, offset, enable_ai_reranking=enable_ai_reranking)
+            results, search_metadata = await self.search(
+                query,
+                limit,
+                offset,
+                enable_ai_reranking=enable_ai_reranking,
+                behavioral_signals=behavioral_signals,
+            )
             
             if not results:
                 return {
@@ -1056,74 +1141,11 @@ Return ONLY the queries, one per line, without numbering or bullet points.
         Returns:
             Intent type: 'person_name', 'service', 'howto', 'navigational', 'transactional', or 'general'
         """
-        import re
-        query_stripped = query.strip()
-        words = query_stripped.split()
-        
-        # 1. PERSON NAME DETECTION (e.g., "James Walsh", "Sarah Johnson")
-        # Pattern: Exactly 2 words, both capitalized, minimum 3 chars each
-        if len(words) == 2:
-            first, last = words
-            if (first and last and 
-                first[0].isupper() and last[0].isupper() and
-                len(first) >= 3 and len(last) >= 3):
-                logger.info(f"Detected person_name intent for: '{query}'")
-                return 'person_name'
-        
-        query_lower = query.strip().lower()
-        
-        # 2. EXECUTIVE/ROLE QUERY DETECTION (e.g., "Who is the CEO?", "Who is the president?")
-        # Pattern: Queries asking about specific roles or positions
-        executive_role_patterns = [
-            r'who is the (ceo|president|executive|chairman|director|chief|leader|head)',
-            r'who is (ceo|president|executive|chairman|director|chief|leader|head)',
-            r'(ceo|president|executive|chairman|director|chief|leader|head) (of|at)',
-            r'current (ceo|president|executive|chairman|director|chief|leader|head)',
-        ]
-        for pattern in executive_role_patterns:
-            if re.search(pattern, query_lower):
-                logger.info(f"Detected executive_role intent for: '{query}'")
-                return 'executive_role'
-        
-        # 3. SERVICE QUERY DETECTION
-        # Pattern: Contains service-related keywords
-        service_keywords = ['service', 'services', 'solutions', 'consulting', 
-                           'support', 'implementation', 'solutions for', 'solutions in']
-        if any(keyword in query_lower for keyword in service_keywords):
-            logger.info(f"Detected service intent for: '{query}'")
-            return 'service'
-        
-        # 3. HOW-TO / INFORMATIONAL QUERY
-        # Pattern: Starts with question words
-        question_patterns = [r'^(how|what|why|when|where)\b', 
-                            r'^(how to)', 
-                            r'^(what is)', 
-                            r'^(why do)',
-                            r'^(can |should |will )']
-        for pattern in question_patterns:
-            if re.match(pattern, query_lower):
-                logger.info(f"Detected howto intent for: '{query}'")
-                return 'howto'
-        
-        # 4. NAVIGATIONAL QUERY (User looking for specific page)
-        navigational_keywords = ['contact', 'about us', 'team', 'careers', 
-                                'locations', 'contact us', 'office', 'address',
-                                'login', 'account', 'sign in']
-        if any(keyword in query_lower for keyword in navigational_keywords):
-            logger.info(f"Detected navigational intent for: '{query}'")
-            return 'navigational'
-        
-        # 5. TRANSACTIONAL QUERY (User wants to do something)
-        transactional_keywords = ['buy', 'download', 'purchase', 'order', 
-                                 'get', 'find', 'hire', 'request', 'apply',
-                                 'register', 'subscribe']
-        if any(keyword in query_lower for keyword in transactional_keywords):
-            logger.info(f"Detected transactional intent for: '{query}'")
-            return 'transactional'
-        
-        # Default: General search
-        logger.info(f"Detected general intent for: '{query}'")
-        return 'general'
+        analysis = analyze_query(query)
+        intent = analysis.get('intent', 'general')
+        self._last_query_analysis = analysis
+        logger.info(f"Detected intent via shared analyzer: '{intent}' for query '{query}'")
+        return intent
     
     def _generate_intent_based_instructions(self, query: str, intent: str) -> str:
         """
@@ -1220,9 +1242,20 @@ RULES:
         else:
             return ""  # General intent - use default behavior
     
-    def _tfidf_search(self, query: str, limit: int, offset: int = 0) -> List[Dict[str, Any]]:
+    def _tfidf_search(
+        self,
+        query: str,
+        limit: int,
+        offset: int = 0,
+        query_context: Optional[Dict[str, Any]] = None,
+        behavioral_maps: Optional[Dict[str, Dict[str, float]]] = None,
+    ) -> List[Dict[str, Any]]:
         """Perform TF-IDF based search with offset support."""
         try:
+            if query_context is None:
+                query_context = getattr(self, "_last_query_analysis", None)
+            if behavioral_maps is None:
+                behavioral_maps = {}
             # Transform query using fitted TF-IDF
             query_vector = self.tfidf_vectorizer.transform([query])
             
@@ -1255,7 +1288,7 @@ RULES:
                     
                     # Apply multiple boosting factors
                     # 1. Field-based boosting (improved phrase matching)
-                    field_boost = self._calculate_field_score(query, doc)
+                    field_boost = self._calculate_field_score(query, doc, query_context)
                     score *= field_boost
                     
                     # 2. Freshness/recency boosting
@@ -1266,7 +1299,28 @@ RULES:
                     category_tag_boost = self._calculate_category_tag_boost(query, doc)
                     score *= category_tag_boost
                     
-                    logger.debug(f"Boosts applied - Field: {field_boost:.2f}, Freshness: {freshness_boost:.2f}, Category/Tag: {category_tag_boost:.2f}, Final: {score:.4f}")
+                    # 4. Heading/anchor boost
+                    heading_anchor_boost = self._calculate_heading_anchor_boost(query, doc)
+                    score *= heading_anchor_boost
+                    
+                    # 5. Taxonomy depth boost
+                    taxonomy_depth_boost = self._calculate_taxonomy_depth_boost(doc)
+                    score *= taxonomy_depth_boost
+
+                    # 6. Behavioral (CTR) boost
+                    behavioral_boost = self._calculate_behavioral_boost(doc, behavioral_maps)
+                    score *= behavioral_boost
+                    
+                    logger.debug(
+                        "Boosts applied - Field: %.2f, Freshness: %.2f, Category/Tag: %.2f, Heading/Anchor: %.2f, Taxonomy: %.2f, Behavioral: %.2f, Final: %.4f",
+                        field_boost,
+                        freshness_boost,
+                        category_tag_boost,
+                        heading_anchor_boost,
+                        taxonomy_depth_boost,
+                        behavioral_boost,
+                        score,
+                    )
                     
                     result = {
                         'id': doc['id'],
@@ -1285,6 +1339,20 @@ RULES:
                         'score': float(score),
                         'relevance': 'high' if score > 0.1 else 'medium' if score > 0.05 else 'low'
                     }
+                    
+                    if isinstance(doc.get('meta'), dict):
+                        result_meta = dict(doc['meta'])
+                    else:
+                        result_meta = {}
+                    result_meta['boost_debug'] = {
+                        'field': round(field_boost, 3),
+                        'freshness': round(freshness_boost, 3),
+                        'category_tag': round(category_tag_boost, 3),
+                        'heading_anchor': round(heading_anchor_boost, 3),
+                        'taxonomy_depth': round(taxonomy_depth_boost, 3),
+                        'behavioral': round(behavioral_boost, 3),
+                    }
+                    result['meta'] = result_meta
                     results.append(result)
             
             logger.info(f"TF-IDF search: query='{query}', offset={offset}, limit={limit}, results={len(results)}")
@@ -1473,17 +1541,31 @@ RULES:
             logger.error(f"Error generating OpenAI embedding batch: {e}")
             raise
     
-    def _simple_text_search(self, query: str, limit: int) -> List[Dict[str, Any]]:
+    def _simple_text_search(
+        self,
+        query: str,
+        limit: int,
+        query_context: Optional[Dict[str, Any]] = None,
+        behavioral_maps: Optional[Dict[str, Dict[str, float]]] = None,
+    ) -> List[Dict[str, Any]]:
         """Perform simple text-based search with partial word matching."""
         try:
-            query_lower = query.lower()
-            query_words = query_lower.split()
+            if query_context is None:
+                query_context = getattr(self, "_last_query_analysis", None)
+            if behavioral_maps is None:
+                behavioral_maps = {}
+
+            query_lower = query.lower().strip()
+            if not query_lower:
+                return []
+
+            query_words = [word for word in query_lower.split() if len(word) >= 3]
             results = []
             
             for doc in self.documents:
-                doc_title_lower = doc['title'].lower()
-                doc_content_lower = doc['content'].lower()
-                doc_excerpt_lower = doc['excerpt'].lower()
+                doc_title_lower = doc.get('title', '').lower()
+                doc_content_lower = doc.get('content', '').lower()
+                doc_excerpt_lower = doc.get('excerpt', '').lower()
                 
                 # Exact match (highest priority)
                 exact_title_match = query_lower in doc_title_lower
@@ -1496,45 +1578,60 @@ RULES:
                 partial_excerpt_match = any(word in doc_excerpt_lower for word in query_words if len(word) >= 4)
                 
                 # Calculate simple score
-                score = 0
+                score = 0.0
                 if exact_title_match:
-                    score += 5  # Exact match in title is very relevant
+                    score += 5.0
                 elif partial_title_match:
-                    score += 2  # Partial match in title
+                    score += 2.0
                     
                 if exact_excerpt_match:
-                    score += 3
+                    score += 3.0
                 elif partial_excerpt_match:
-                    score += 1
+                    score += 1.0
                     
                 if exact_content_match:
-                    score += 2
+                    score += 2.0
                 elif partial_content_match:
                     score += 0.5
                 
                 if score > 0:
                     # Normalize score to 0-1 range
-                    normalized_score = float(score) / 10.0
+                    normalized_score = score / 10.0
                     
                     # Apply boosting factors
-                    field_boost = self._calculate_field_score(query, doc)
+                    field_boost = self._calculate_field_score(query, doc, query_context)
                     freshness_boost = self._calculate_freshness_boost(doc.get('date', ''))
                     category_tag_boost = self._calculate_category_tag_boost(query, doc)
+                    behavioral_boost = self._calculate_behavioral_boost(doc, behavioral_maps)
                     
-                    final_score = normalized_score * field_boost * freshness_boost * category_tag_boost
+                    final_score = (
+                        normalized_score
+                        * field_boost
+                        * freshness_boost
+                        * category_tag_boost
+                        * behavioral_boost
+                    )
                     
                     result = {
-                        'id': doc['id'],
-                        'title': doc['title'],
-                        'url': doc['url'],
-                        'excerpt': doc['excerpt'],
-                        'type': doc.get('type', 'post'),  # Include post type!
+                        'id': doc.get('id'),
+                        'title': doc.get('title'),
+                        'url': doc.get('url'),
+                        'excerpt': doc.get('excerpt'),
+                        'type': doc.get('type', 'post'),
                         'date': doc.get('date', ''),
                         'author': doc.get('author', ''),
                         'categories': doc.get('categories', []),
                         'tags': doc.get('tags', []),
-                        'score': final_score,
+                        'score': float(final_score),
                         'relevance': 'high' if final_score >= 0.5 else 'medium' if final_score >= 0.2 else 'low'
+                    }
+                    result['meta'] = {
+                        'boost_debug': {
+                            'field': round(field_boost, 3),
+                            'freshness': round(freshness_boost, 3),
+                            'category_tag': round(category_tag_boost, 3),
+                            'behavioral': round(behavioral_boost, 3),
+                        }
                     }
                     results.append(result)
             
@@ -1597,45 +1694,162 @@ RULES:
             logger.warning(f"Error calculating freshness boost: {e}")
             return 1.0
     
-    def _calculate_field_score(self, query: str, doc: Dict[str, Any]) -> float:
+    def _calculate_field_score(
+        self,
+        query: str,
+        doc: Dict[str, Any],
+        query_context: Optional[Dict[str, Any]] = None,
+    ) -> float:
         """
         Calculate field-based relevance score with improved phrase matching.
         
         Args:
             query: Search query
             doc: Document dictionary
+            query_context: Optional heuristic analysis (intent/entities)
             
         Returns:
             Boost multiplier
         """
+        if query_context is None:
+            query_context = getattr(self, "_last_query_analysis", None)
+
         query_lower = query.lower().strip()
-        query_words = set(query_lower.split())
+        query_words = [word for word in query_lower.split() if len(word) >= 3]
+        query_word_set = set(query_words)
         
         title_lower = doc.get('title', '').lower()
         excerpt_lower = (doc.get('excerpt', '') or '').lower()
         content_lower = doc.get('content', '').lower()
+        doc_type = (doc.get('type') or '').lower()
         
-        score = 0.0
+        boost = 0.0
         
         # Exact phrase match in title (highest priority)
         if query_lower in title_lower:
-            score += 3.0
+            boost += 2.0  # Base 1.0 + 2.0 = 3.0 (previous behaviour)
         # All words in title (phrase match)
-        elif query_words and query_words.issubset(set(title_lower.split())):
-            score += 2.0
+        elif query_word_set and query_word_set.issubset(set(title_lower.split())):
+            boost += 1.2
         # Some words in title
-        elif any(word in title_lower for word in query_words if len(word) >= 3):
-            score += 1.0
+        elif any(word in title_lower for word in query_words):
+            boost += 0.6
         
         # Excerpt matches (medium priority)
         if query_lower in excerpt_lower:
-            score += 1.5
-        elif any(word in excerpt_lower for word in query_words if len(word) >= 3):
-            score += 0.5
+            boost += 0.8
+        elif any(word in excerpt_lower for word in query_words):
+            boost += 0.3
         
         # Content matches (lowest priority)
-        if any(word in content_lower for word in query_words if len(word) >= 3):
-            score += 0.2
+        if query_word_set and any(word in content_lower for word in query_words):
+            boost += 0.15
+
+        # Meta keywords / custom fields
+        meta = doc.get('meta', {}) if isinstance(doc.get('meta'), dict) else {}
+        meta_text_parts: List[str] = []
+        if meta:
+            for key in (
+                'focus_keyword',
+                'focus_keywords',
+                'keywords',
+                'yoast_focus_keyword',
+                'yoast_focus_keywords',
+                'topics',
+                'key_topics',
+                'summary',
+                'meta_keywords',
+            ):
+                value = meta.get(key)
+                if not value:
+                    continue
+                if isinstance(value, str):
+                    meta_text_parts.append(value.lower())
+                elif isinstance(value, (list, tuple, set)):
+                    meta_text_parts.extend(str(item).lower() for item in value if item)
+        if isinstance(doc.get('custom_fields'), dict):
+            for val in doc['custom_fields'].values():
+                if isinstance(val, str):
+                    meta_text_parts.append(val.lower())
+                elif isinstance(val, (list, tuple, set)):
+                    meta_text_parts.extend(str(item).lower() for item in val if item)
+        meta_text = " ".join(meta_text_parts)
+        if meta_text:
+            if query_lower and query_lower in meta_text:
+                boost += 0.6
+            elif any(word in meta_text for word in query_words):
+                boost += 0.25
+
+        # Entity-aware boosts (services, people, locations, regulatory topics)
+        if query_context:
+            entities = query_context.get('entities', {})
+            primary_entities = query_context.get('primary_entities', [])
+
+            service_entities = [
+                str(service).lower()
+                for service in entities.get('services', [])
+                if isinstance(service, str)
+            ]
+            for service in service_entities:
+                if not service:
+                    continue
+                if service in query_lower:
+                    continue  # already covered above
+                if (
+                    service in title_lower
+                    or service in excerpt_lower
+                    or (meta_text and service in meta_text)
+                    or service in content_lower[:2000]
+                ):
+                    boost += 0.75
+                    break
+
+            # If query focuses on services, prefer service content types
+            if 'services' in primary_entities and doc_type in {'page', 'scs-services'}:
+                boost += 0.4
+
+            people_entities = [
+                str(person).lower()
+                for person in entities.get('people', [])
+                if isinstance(person, str)
+            ]
+            if people_entities:
+                for person in people_entities:
+                    if person and person in title_lower:
+                        boost += 0.6
+                        break
+                if doc_type in {'scs-professionals', 'staff', 'team'}:
+                    boost += 0.4
+
+            location_entities = [
+                str(loc).lower()
+                for loc in entities.get('locations', [])
+                if isinstance(loc, str)
+            ]
+            for location in location_entities:
+                if not location or location in query_lower:
+                    continue
+                if (
+                    location in title_lower
+                    or location in excerpt_lower
+                    or (meta_text and location in meta_text)
+                ):
+                    boost += 0.3
+                    break
+
+            regulatory_entities = [
+                str(term).lower()
+                for term in entities.get('regulatory', [])
+                if isinstance(term, str)
+            ]
+            if regulatory_entities:
+                for term in regulatory_entities:
+                    if term and (term in title_lower or term in meta_text):
+                        boost += 0.25
+                        break
+
+        # Return boost multiplier (minimum 1.0, capped to avoid runaway boosts)
+        return max(1.0, min(1.0 + boost, 4.0))
         
         # Return boost multiplier (minimum 1.0)
         return max(score, 1.0)
@@ -1688,6 +1902,182 @@ RULES:
         
         return min(boost, 1.5)  # Cap at 1.5x
     
+    def _create_normalized_score_map(self, results: List[Dict[str, Any]]) -> Dict[str, float]:
+        """
+        Normalize scores (0-1) for a list of results.
+        """
+        if not results:
+            return {}
+        
+        scores = []
+        ids = []
+        for result in results:
+            doc_id = str(result.get('id', ''))
+            if not doc_id:
+                continue
+            ids.append(doc_id)
+            scores.append(max(float(result.get('score', 0.0)), 0.0))
+        
+        if not scores:
+            return {}
+        
+        max_score = max(scores)
+        min_score = min(scores)
+        if max_score == min_score:
+            return {doc_id: 1.0 for doc_id in ids}
+        
+        return {
+            doc_id: (score - min_score) / (max_score - min_score)
+            for doc_id, score in zip(ids, scores)
+        }
+    
+    def _calculate_heading_anchor_boost(self, query: str, doc: Dict[str, Any]) -> float:
+        """
+        Boost documents where the query appears in headings or anchor text.
+        """
+        query_lower = query.lower().strip()
+        if not query_lower:
+            return 1.0
+        
+        query_words = [word for word in query_lower.split() if len(word) >= 3]
+        boost = 1.0
+        
+        meta = doc.get('meta', {})
+        headings: List[str] = []
+        if isinstance(meta, dict):
+            headings_meta = meta.get('headings')
+            if isinstance(headings_meta, list):
+                headings.extend(str(h) for h in headings_meta)
+        
+        content = doc.get('content', '') or ''
+        if content and not headings:
+            raw_headings = re.findall(r'<h[1-3][^>]*>(.*?)</h[1-3]>', content, flags=re.IGNORECASE | re.DOTALL)
+            headings.extend(raw_headings)
+        
+        def clean_text(text: str) -> str:
+            # Remove HTML tags and collapse whitespace
+            cleaned = re.sub(r'<[^>]+>', ' ', text)
+            cleaned = re.sub(r'\s+', ' ', cleaned)
+            return cleaned.strip().lower()
+        
+        headings = [clean_text(h) for h in headings if isinstance(h, str) and h.strip()]
+        
+        for heading in headings:
+            if not heading:
+                continue
+            if query_lower in heading:
+                boost += 0.35
+                break
+            elif all(word in heading for word in query_words):
+                boost += 0.25
+                break
+        
+        # Anchor text
+        anchors = re.findall(r'<a[^>]*>(.*?)</a>', content, flags=re.IGNORECASE | re.DOTALL) if content else []
+        for anchor in anchors:
+            anchor_text = clean_text(anchor)
+            if not anchor_text:
+                continue
+            if query_lower in anchor_text:
+                boost += 0.2
+                break
+            elif any(word in anchor_text for word in query_words):
+                boost += 0.1
+                break
+        
+        return min(boost, 1.6)
+    
+    def _calculate_taxonomy_depth_boost(self, doc: Dict[str, Any]) -> float:
+        """
+        Boost documents that belong to deep taxonomy hierarchies (more specific content).
+        """
+        depth_score = 0.0
+        
+        for taxonomy in ('categories', 'tags'):
+            terms = doc.get(taxonomy, [])
+            for term in terms:
+                parent_id = None
+                slug = None
+                if isinstance(term, dict):
+                    parent_id = term.get('parent')
+                    slug = term.get('slug') or term.get('path')
+                else:
+                    slug = str(term)
+                
+                if parent_id:
+                    depth_score += 0.1
+                if isinstance(slug, str):
+                    # Count nesting indicators (e.g., waste/services/hazardous)
+                    depth_score += 0.05 * slug.count('/')
+                    depth_score += 0.05 * slug.count('>')
+        
+        return min(1.0 + depth_score, 1.4)
+
+    def _prepare_behavioral_maps(
+        self,
+        signals: Optional[Dict[str, Any]],
+    ) -> Dict[str, Dict[str, float]]:
+        maps: Dict[str, Dict[str, float]] = {
+            'ctr': {}
+        }
+        if not signals:
+            return maps
+
+        ctr_payload = signals.get('ctr')
+        if isinstance(ctr_payload, dict):
+            ctr_items = ctr_payload.get('items', [])
+            ctr_map: Dict[str, float] = {}
+            for item in ctr_items:
+                url = item.get('url')
+                weight = item.get('weight')
+                if not url or weight is None:
+                    continue
+                try:
+                    normalized_url = self._normalize_url(url)
+                    ctr_weight = float(weight)
+                except (ValueError, TypeError):
+                    continue
+                if not normalized_url or ctr_weight <= 0:
+                    continue
+                ctr_map[normalized_url] = min(max(ctr_weight, 0.0), 1.0)
+            maps['ctr'] = ctr_map
+
+        return maps
+
+    def _normalize_url(self, url: str) -> str:
+        if not url:
+            return ""
+        try:
+            parsed = urlsplit(url)
+            scheme = parsed.scheme.lower()
+            netloc = parsed.netloc.lower()
+            path = parsed.path.rstrip('/') or '/'
+            return urlunsplit((scheme, netloc, path, '', ''))
+        except Exception:
+            return url.strip().lower().rstrip('/')
+
+    def _calculate_behavioral_boost(
+        self,
+        doc: Dict[str, Any],
+        behavioral_maps: Dict[str, Dict[str, float]],
+    ) -> float:
+        boost = 1.0
+        if not behavioral_maps:
+            return boost
+
+        url = doc.get('url')
+        if url:
+            norm_url = self._normalize_url(url)
+        else:
+            norm_url = ""
+
+        ctr_map = behavioral_maps.get('ctr', {})
+        if norm_url and norm_url in ctr_map:
+            ctr_weight = min(max(float(ctr_map[norm_url]), 0.0), 1.0)
+            boost *= 1.0 + (ctr_weight * 0.75)
+
+        return boost
+    
     def _reciprocal_rank_fusion(self, results1: List[Dict[str, Any]], results2: List[Dict[str, Any]], k: int = 60) -> List[Dict[str, Any]]:
         """
         Combine two result lists using Reciprocal Rank Fusion (RRF).
@@ -1701,31 +2091,59 @@ RULES:
             Combined and reranked results
         """
         scores = {}
+        lexical_norm_map = self._create_normalized_score_map(results1)
+        vector_norm_map = self._create_normalized_score_map(results2)
         
         # Score results from first list
         for rank, result in enumerate(results1, 1):
             doc_id = str(result.get('id', ''))
-            if doc_id not in scores:
-                scores[doc_id] = {'doc': result.copy(), 'rrf_score': 0.0}
-            scores[doc_id]['rrf_score'] += 1.0 / (k + rank)
+            if not doc_id:
+                continue
+            entry = scores.setdefault(doc_id, {'doc': result.copy(), 'rrf_score': 0.0})
+            entry['rrf_score'] += 1.0 / (k + rank)
+            doc_entry = entry['doc']
+            doc_entry['lexical_score'] = result.get('score', 0.0)
+            doc_entry['lexical_score_normalized'] = lexical_norm_map.get(doc_id, 0.0)
+            doc_entry['lexical_rank'] = rank
         
         # Score results from second list
         for rank, result in enumerate(results2, 1):
             doc_id = str(result.get('id', ''))
-            if doc_id not in scores:
-                scores[doc_id] = {'doc': result.copy(), 'rrf_score': 0.0}
-            scores[doc_id]['rrf_score'] += 1.0 / (k + rank)
+            if not doc_id:
+                continue
+            entry = scores.setdefault(doc_id, {'doc': result.copy(), 'rrf_score': 0.0})
+            entry['rrf_score'] += 1.0 / (k + rank)
+            doc_entry = entry['doc']
+            doc_entry.setdefault('lexical_score', 0.0)
+            doc_entry.setdefault('lexical_score_normalized', 0.0)
+            doc_entry['vector_score'] = result.get('score', 0.0)
+            doc_entry['vector_score_normalized'] = vector_norm_map.get(doc_id, 0.0)
+            doc_entry['vector_rank'] = rank
         
         # Sort by RRF score
         combined = sorted(scores.values(), key=lambda x: x['rrf_score'], reverse=True)
         
         # Update scores in results
         for item in combined:
-            item['doc']['rrf_score'] = item['rrf_score']
+            doc_entry = item['doc']
+            doc_entry.setdefault('lexical_score', 0.0)
+            doc_entry.setdefault('lexical_score_normalized', 0.0)
+            doc_entry.setdefault('vector_score', 0.0)
+            doc_entry.setdefault('vector_score_normalized', 0.0)
+            doc_entry['rrf_score'] = item['rrf_score']
             # Use RRF score as base score, but preserve original score for reference
-            if 'original_score' not in item['doc']:
-                item['doc']['original_score'] = item['doc'].get('score', 0.0)
-            item['doc']['score'] = item['rrf_score']
+            if 'original_score' not in doc_entry:
+                doc_entry['original_score'] = doc_entry.get('score', 0.0)
+            doc_entry['score'] = item['rrf_score']
+            fusion_details = doc_entry.get('fusion_details', {})
+            fusion_details.update({
+                'lexical_score_normalized': doc_entry.get('lexical_score_normalized'),
+                'vector_score_normalized': doc_entry.get('vector_score_normalized'),
+                'lexical_rank': doc_entry.get('lexical_rank'),
+                'vector_rank': doc_entry.get('vector_rank'),
+                'rrf_constant': k,
+            })
+            doc_entry['fusion_details'] = fusion_details
         
         return [item['doc'] for item in combined]
     

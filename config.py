@@ -5,7 +5,7 @@ This module defines all application settings loaded from environment variables.
 Settings are validated using Pydantic for type safety.
 """
 import os
-from typing import Optional, Literal
+from typing import Optional, Literal, List
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
@@ -114,7 +114,29 @@ class Settings(BaseSettings):
     
     search_page_title: str = "Hybrid Search"
     """Title for the search page"""
-    
+
+    enable_ctr_boost: bool = True
+    """Toggle analytics-driven CTR boosting."""
+
+    enable_ai_rerank: bool = True
+    """Globally enable/disable AI reranking support."""
+
+    # ========================================================================
+    # INTENT KEYWORD CUSTOMIZATION
+    # ========================================================================
+
+    intent_service_keywords: List[str] = []
+    """Additional keywords/phrases that should signal service intent."""
+
+    intent_sector_keywords: List[str] = []
+    """Additional keywords/phrases that should signal sector/industry intent."""
+
+    intent_navigational_keywords: List[str] = []
+    """Additional keywords/phrases that should signal navigational intent."""
+
+    intent_transactional_keywords: List[str] = []
+    """Additional keywords/phrases that should signal transactional intent."""
+
     # ========================================================================
     # AI INSTRUCTIONS CONFIGURATION
     # ========================================================================
@@ -155,6 +177,28 @@ class Settings(BaseSettings):
         # Default to tfidf if unrecognized
         return "tfidf"
     
+    @field_validator(
+        'intent_service_keywords',
+        'intent_sector_keywords',
+        'intent_navigational_keywords',
+        'intent_transactional_keywords',
+        mode='before',
+    )
+    @classmethod
+    def parse_keyword_list(cls, v):
+        """
+        Normalize comma-separated environment values into string lists.
+        """
+        if v in (None, "", []):
+            return []
+        if isinstance(v, str):
+            return [item.strip() for item in v.split(',') if item.strip()]
+        if isinstance(v, (set, tuple)):
+            return [str(item).strip() for item in v if str(item).strip()]
+        if isinstance(v, list):
+            return [str(item).strip() for item in v if str(item).strip()]
+        return []
+
     class Config:
         """Pydantic configuration."""
         env_file = ".env"

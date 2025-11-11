@@ -2,6 +2,7 @@
 Cerebras LLM integration for query rewriting and answering.
 """
 import logging
+import math
 import re
 from typing import List, Dict, Any, Optional
 import openai
@@ -9,6 +10,7 @@ from openai import OpenAI, AsyncOpenAI
 import asyncio
 import json
 from config import settings
+from query_analysis import analyze_query
 
 logger = logging.getLogger(__name__)
 
@@ -532,6 +534,175 @@ Respond in JSON format:
                 "time_sensitivity": "evergreen"
             }
     
+    def _merge_intent_with_heuristics(
+        self,
+        llm_classification: Dict[str, Any],
+        heuristic_analysis: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Combine LLM intent classification with local heuristic analysis.
+        """
+        merged = dict(llm_classification or {})
+        heuristic_intent = heuristic_analysis.get("intent")
+        heuristic_confidence = heuristic_analysis.get("confidence", 0.0)
+        merged["heuristic_intent"] = heuristic_intent
+        merged["heuristic_confidence"] = heuristic_confidence
+        merged["heuristic_signals"] = heuristic_analysis.get("signals", {})
+        merged["entities"] = heuristic_analysis.get("entities", {})
+        merged["keywords"] = heuristic_analysis.get("keywords", [])
+        merged["normalized_query"] = heuristic_analysis.get("normalized_query")
+        merged["original_query"] = heuristic_analysis.get("original_query")
+        merged["primary_entities"] = heuristic_analysis.get("primary_entities", [])
+
+        # Promote heuristic intent when confidence is high or LLM returns generic intent
+        llm_intent = merged.get("intent_type")
+        if heuristic_intent and (
+            heuristic_confidence >= 0.7
+            or not llm_intent
+            or llm_intent in {"informational", "general", "exploratory"}
+        ):
+            merged["intent_type"] = heuristic_intent
+
+        return merged
+
+    def _format_query_context_for_prompt(self, query_context: Optional[Dict[str, Any]]) -> str:
+        """
+        Build a concise string describing query intent and entities for LLM prompts.
+        """
+        if not query_context:
+            return ""
+
+        parts: List[str] = []
+        intent = query_context.get("intent")
+        confidence = query_context.get("confidence")
+        if intent:
+            parts.append(f"Intent: {intent}")
+        if confidence is not None:
+            parts.append(f"Confidence: {confidence:.2f}")
+        primary_entities = query_context.get("primary_entities") or []
+        if primary_entities:
+            parts.append(f"Primary Entities: {', '.join(primary_entities[:5])}")
+
+        entities = query_context.get("entities", {})
+        entity_lines: List[str] = []
+        for entity_type in (
+            "people",
+            "roles",
+            "services",
+            "sectors",
+            "locations",
+            "organizations",
+            "regulatory",
+            "local_modifiers",
+        ):
+            values = entities.get(entity_type) or []
+            if values:
+                entity_lines.append(f"{entity_type.title()}: {', '.join(values[:5])}")
+
+        if entity_lines:
+            parts.append("Entities:")
+            parts.extend(f"- {line}" for line in entity_lines)
+
+        signals = query_context.get("signals", {})
+        if signals:
+            interesting = {k: v for k, v in signals.items() if v}
+            if interesting:
+                parts.append("Signals:")
+                for key, value in interesting.items():
+                    parts.append(f"- {key} = {value}")
+
+        return "\n".join(parts)
+
+    def _build_intent_guidance(self, query_context: Optional[Dict[str, Any]]) -> str:
+        """
+        Provide intent-specific guidance to the reranker.
+        """
+        if not query_context:
+            return ""
+
+        intent = query_context.get("intent")
+        if not intent:
+            return ""
+
+        guidance_map = {
+            "person_name": (
+                "When the user searches for a person, prioritize professional/staff profiles that match the full name. "
+                "Results that mention a different individual or only reference the surname should score lower."
+            ),
+            "executive_role": (
+                "The user is looking for a leadership role. Boost profiles or pages where the title (CEO, President, etc.) "
+                "appears prominently. Generic leadership articles should rank lower."
+            ),
+            "service": (
+                "The intent is service discovery. Rank dedicated service pages and solution overviews higher than news posts. "
+                "Emphasize actionable descriptions of capabilities."
+            ),
+            "howto": (
+                "The user wants guidance. Prefer step-by-step instructions, tutorials, or practical checklists over marketing copy."
+            ),
+            "navigational": (
+                "Treat this as navigational. Direct 'Contact', 'About', or similarly named pages should outrank blog posts."
+            ),
+            "transactional": (
+                "The query implies taking action (request, apply, register). Elevate conversion pages/forms over informational content."
+            ),
+            "sector": (
+                "The user is evaluating an industry or sector. Prefer sector overviews, regulatory briefings, or market insights directly tied to the sector terms detected."
+            ),
+            "local_service": (
+                "The query has a local intent. Prioritize service pages mentioning the requested geography or regional offices, followed by nearby case studies."
+            ),
+            "case_study": (
+                "Highlight project summaries, case studies, and success stories that clearly name the project or client outcomes matching the query."
+            ),
+            "regulatory": (
+                "The user is interested in regulations or compliance. Prioritize regulatory updates, compliance guides, and authoritative summaries over marketing copy."
+            ),
+        }
+
+        return guidance_map.get(intent, "")
+
+    def _softmax(self, values: List[float], temperature: float = 1.0) -> List[float]:
+        """
+        Compute softmax-normalized probabilities with temperature scaling.
+        """
+        if not values:
+            return []
+        
+        sanitized = [float(v) for v in values]
+        max_val = max(sanitized)
+        if temperature <= 0:
+            temperature = 1.0
+        
+        exps = [math.exp((v - max_val) / temperature) for v in sanitized]
+        total = sum(exps)
+        if total == 0:
+            return [0.0 for _ in sanitized]
+        return [val / total for val in exps]
+
+    @staticmethod
+    def _compute_rank_positions(values: List[float]) -> Dict[int, int]:
+        """
+        Convert a list of scores into 1-indexed rank positions. Ties share the same rank.
+        """
+        if not values:
+            return {}
+        sorted_indices = sorted(
+            range(len(values)),
+            key=lambda idx: values[idx],
+            reverse=True,
+        )
+        ranks: Dict[int, int] = {}
+        current_rank = 1
+        previous_value: Optional[float] = None
+        for position, idx in enumerate(sorted_indices, start=1):
+            value = values[idx]
+            if previous_value is None or value < previous_value:
+                current_rank = position
+            ranks[idx] = current_rank
+            previous_value = value
+        return ranks
+    
     async def process_query_async(self, query: str) -> Dict[str, Any]:
         """Process a query asynchronously with multiple LLM operations."""
         try:
@@ -539,6 +710,15 @@ Respond in JSON format:
             # This prevents double-processing and malformed queries
             if query.startswith('```') or (query.strip().startswith('{') and query.strip().endswith('}')):
                 logger.warning(f"⚠️ Query appears to be malformed JSON, skipping rewriting: {query[:100]}")
+                heuristic_analysis = analyze_query(query)
+                query_context = {
+                    "intent": heuristic_analysis.get("intent"),
+                    "confidence": heuristic_analysis.get("confidence"),
+                    "entities": heuristic_analysis.get("entities"),
+                    "signals": heuristic_analysis.get("signals"),
+                    "keywords": heuristic_analysis.get("keywords"),
+                    "heuristic_analysis": heuristic_analysis,
+                }
                 return {
                     "original_query": query,
                     "rewritten_query": query,  # Return original, don't rewrite
@@ -549,7 +729,9 @@ Respond in JSON format:
                         "result_type": "article",
                         "domain": "general",
                         "time_sensitivity": "evergreen"
-                    }
+                    },
+                    "heuristic_analysis": heuristic_analysis,
+                    "query_context": query_context
                 }
             
             # Run multiple operations concurrently
@@ -560,6 +742,8 @@ Respond in JSON format:
             ]
             
             rewritten_query, expanded_queries, intent_classification = await asyncio.gather(*tasks)
+            heuristic_analysis = analyze_query(query)
+            intent_classification = self._merge_intent_with_heuristics(intent_classification, heuristic_analysis)
             
             # CRITICAL FIX: Ensure rewritten_query is a string, not JSON
             # Sometimes rewrite_query returns JSON string instead of just the query
@@ -576,16 +760,32 @@ Respond in JSON format:
             # Ensure rewritten_query is a clean string
             if not isinstance(rewritten_query, str) or len(rewritten_query.strip()) == 0:
                 rewritten_query = query  # Fallback to original
+
+            query_context = {
+                "intent": intent_classification.get("intent_type", heuristic_analysis.get("intent")),
+                "confidence": max(
+                    float(intent_classification.get("heuristic_confidence", 0.0) or 0.0),
+                    float(heuristic_analysis.get("confidence", 0.0) or 0.0),
+                ),
+                "entities": heuristic_analysis.get("entities"),
+                "signals": heuristic_analysis.get("signals"),
+                "keywords": heuristic_analysis.get("keywords"),
+                "heuristic_analysis": heuristic_analysis,
+                "llm_classification": intent_classification,
+            }
             
             return {
                 "original_query": query,
                 "rewritten_query": rewritten_query,
                 "expanded_queries": expanded_queries,
-                "intent_classification": intent_classification
+                "intent_classification": intent_classification,
+                "heuristic_analysis": heuristic_analysis,
+                "query_context": query_context
             }
             
         except Exception as e:
             logger.error(f"Error processing query asynchronously: {e}")
+            fallback_analysis = analyze_query(query)
             return {
                 "original_query": query,
                 "rewritten_query": query,
@@ -596,7 +796,9 @@ Respond in JSON format:
                     "result_type": "article",
                     "domain": "general",
                     "time_sensitivity": "evergreen"
-                }
+                },
+                "heuristic_analysis": fallback_analysis,
+                "query_context": fallback_analysis
             }
     
     async def rerank_results_async(
@@ -605,7 +807,8 @@ Respond in JSON format:
         results: List[Dict[str, Any]],
         custom_instructions: str = "",
         ai_weight: float = 0.7,
-        post_type_priority: Optional[List[str]] = None
+        post_type_priority: Optional[List[str]] = None,
+        query_context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Use LLM to rerank search results based on semantic relevance (async version).
@@ -615,6 +818,8 @@ Respond in JSON format:
             results: List of search results with titles, excerpts, scores
             custom_instructions: User's custom instructions for AI
             ai_weight: How much to weight AI score (0-1)
+            post_type_priority: Optional priority ordering for result types
+            query_context: Heuristic intent/entity analysis to guide reranking
             
         Returns:
             {
@@ -627,7 +832,7 @@ Respond in JSON format:
         
         try:
             if not results:
-                return {'results': [], 'metadata': {}}
+                return {'results': [], 'metadata': {'query_context': query_context}}
             
             logger.info(f"AI Reranking {len(results)} results for query: '{query}'")
             
@@ -653,10 +858,35 @@ Consider business priorities: professional expertise, service offerings, and use
             if custom_instructions:
                 system_prompt += f"\n\n🎯 CUSTOM RANKING CRITERIA (HIGHEST PRIORITY):\n{custom_instructions}"
             
+            context_snippet = self._format_query_context_for_prompt(query_context)
+            if context_snippet:
+                system_prompt += f"\n\nQUERY CONTEXT SIGNALS:\n{context_snippet}"
+
+            intent_guidance = self._build_intent_guidance(query_context)
+            if intent_guidance:
+                system_prompt += f"\n\nINTENT GUIDANCE:\n{intent_guidance}"
+            
+            # Build entity context hints for the user prompt
+            entity_context_lines: List[str] = []
+            if query_context:
+                primary_entities = (query_context.get("primary_entities") or [])[:3]
+                if primary_entities:
+                    entity_context_lines.append("Primary focus: " + ", ".join(primary_entities))
+                service_entities = (query_context.get("entities", {}).get("services") or [])[:3]
+                if service_entities:
+                    entity_context_lines.append("Key services: " + ", ".join(service_entities))
+                people_entities = (query_context.get("entities", {}).get("people") or [])[:2]
+                if people_entities:
+                    entity_context_lines.append("People mentioned: " + ", ".join(people_entities))
+            entity_context_block = ""
+            if entity_context_lines:
+                entity_context_block = "\n".join(["", "CONTEXT HINTS:"] + [f"- {line}" for line in entity_context_lines])
+
             # Build user prompt
             user_prompt = f"""
 Analyze these search results for the query: "{query}"
 
+{entity_context_block}
 {results_text}
 
 📊 SCORING CRITERIA (Rate each result 0-100):
@@ -768,56 +998,102 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
             
             logger.info(f"Parsed {len(ai_scores)} AI scores")
             
-            # Update results with AI scores
-            reranked_results = []
+            # Map AI scores by result ID for quick lookup
+            ai_scores_map = {
+                str(item.get('id')): item
+                for item in ai_scores
+                if item.get('id') is not None
+            }
+
+            tfidf_values: List[float] = []
+            ai_values: List[float] = []
+            ai_presence: List[bool] = []
+
             for result in results:
-                # Find matching AI score
-                ai_result = next((r for r in ai_scores if str(r.get('id')) == str(result['id'])), None)
-                
-                if ai_result:
-                    tfidf_score = result.get('score', 0.0)
-                    ai_score = ai_result['ai_score'] / 100  # Normalize to 0-1
-                    
-                    # Calculate hybrid score using custom weight
-                    tfidf_weight = 1.0 - ai_weight
-                    hybrid_score = (tfidf_score * tfidf_weight) + (ai_score * ai_weight)
-                    
-                    result['ai_score'] = ai_score
-                    result['ai_reason'] = ai_result.get('reason', '')
-                    result['hybrid_score'] = hybrid_score
-                    result['score'] = hybrid_score  # Update main score for sorting
-                    
-                    # Add ranking explanation for admin users
-                    result['ranking_explanation'] = {
-                        'tfidf_score': round(tfidf_score, 4),
-                        'ai_score': round(ai_score, 4),
-                        'ai_score_raw': ai_result['ai_score'],  # 0-100 scale
-                        'hybrid_score': round(hybrid_score, 4),
-                        'tfidf_weight': round(tfidf_weight, 2),
-                        'ai_weight': round(ai_weight, 2),
-                        'ai_reason': ai_result.get('reason', ''),
-                        'post_type': result.get('type', 'unknown'),
-                        'position_before_priority': None,  # Will be set after sorting
-                    }
-                    
-                    logger.debug(f"Result '{result['title'][:50]}': TF-IDF={tfidf_score:.3f}, AI={ai_score:.3f}, Hybrid={hybrid_score:.3f}")
+                base_rrf = float(result.get('rrf_score', result.get('score', 0.0)))
+                tfidf_values.append(max(base_rrf, 0.0))
+
+                ai_entry = ai_scores_map.get(str(result.get('id')))
+                if ai_entry and isinstance(ai_entry.get('ai_score'), (int, float)):
+                    scaled_ai = max(min(ai_entry['ai_score'] / 100.0, 1.0), 0.0)
+                    ai_values.append(scaled_ai)
+                    ai_presence.append(True)
                 else:
-                    # Fallback if AI didn't score this result
-                    result['ai_score'] = result.get('score', 0.0)
-                    result['hybrid_score'] = result.get('score', 0.0)
-                    result['ai_reason'] = 'No AI scoring available'
-                    result['ranking_explanation'] = {
-                        'tfidf_score': round(result.get('score', 0.0), 4),
-                        'ai_score': None,
-                        'ai_score_raw': None,
-                        'hybrid_score': round(result.get('score', 0.0), 4),
-                        'tfidf_weight': 1.0,
-                        'ai_weight': 0.0,
-                        'ai_reason': 'No AI scoring available',
-                        'post_type': result.get('type', 'unknown'),
-                        'position_before_priority': None,
-                    }
-                    logger.warning(f"No AI score for result ID: {result['id']}")
+                    ai_values.append(0.0)
+                    ai_presence.append(False)
+
+            tfidf_probs = self._softmax(tfidf_values, temperature=0.35)
+            tfidf_rank_map = self._compute_rank_positions(tfidf_probs) if tfidf_probs else {}
+            if any(ai_presence):
+                ai_probs = self._softmax(ai_values, temperature=0.25)
+                ai_rank_map = self._compute_rank_positions(ai_probs)
+            else:
+                ai_probs = [0.0 for _ in ai_values]
+                ai_rank_map = {}
+            default_rank = len(results) + 1
+
+            reranked_results = []
+            for idx, result in enumerate(results):
+                doc_id = str(result.get('id'))
+                tfidf_prob = tfidf_probs[idx] if tfidf_probs else 0.0
+                ai_prob = ai_probs[idx] if ai_probs else 0.0
+                base_rrf = tfidf_values[idx]
+
+                ai_entry = ai_scores_map.get(doc_id)
+                if ai_presence[idx] and ai_entry:
+                    ai_score_raw = ai_entry.get('ai_score')
+                    ai_score = max(min(ai_score_raw / 100.0, 1.0), 0.0)
+                    ai_reason = ai_entry.get('reason', '')
+                else:
+                    ai_score_raw = None
+                    ai_score = None
+                    ai_reason = 'No AI scoring available'
+                    ai_prob = 0.0
+
+                tfidf_rank = tfidf_rank_map.get(idx, default_rank)
+                tfidf_rank_score = 1.0 / max(tfidf_rank, 1)
+
+                ai_rank = ai_rank_map.get(idx)
+                ai_rank_score = 1.0 / ai_rank if ai_rank else 0.0
+
+                probability_mix = ((1.0 - ai_weight) * tfidf_prob) + (ai_weight * ai_prob)
+                hybrid_score = ((1.0 - ai_weight) * tfidf_rank_score) + (ai_weight * ai_rank_score)
+                hybrid_score += 0.05 * probability_mix  # probability tie-breaker
+
+                result['ai_score'] = ai_score if ai_score is not None else ai_prob
+                result['ai_probability'] = ai_prob
+                result['tfidf_probability'] = tfidf_prob
+                result['hybrid_score'] = hybrid_score
+                result['score'] = hybrid_score
+                result['ai_reason'] = ai_reason
+                result['ranking_explanation'] = {
+                    'fusion_strategy': 'borda_weighted',
+                    'tfidf_score': round(base_rrf, 4),
+                    'tfidf_probability': round(tfidf_prob, 4),
+                    'ai_score': round(ai_score, 4) if ai_score is not None else None,
+                    'ai_probability': round(ai_prob, 4),
+                    'ai_score_raw': ai_score_raw,
+                    'tfidf_rank': tfidf_rank,
+                    'tfidf_rank_score': round(tfidf_rank_score, 4),
+                    'ai_rank': ai_rank,
+                    'ai_rank_score': round(ai_rank_score, 4) if ai_rank else None,
+                    'tfidf_weight': round(1.0 - ai_weight, 2),
+                    'ai_weight': round(ai_weight, 2),
+                    'probability_mix': round(probability_mix, 4),
+                    'hybrid_score': round(hybrid_score, 4),
+                    'ai_reason': ai_reason,
+                    'post_type': result.get('type', 'unknown'),
+                    'position_before_priority': None,
+                }
+
+                logger.debug(
+                    "Result '%s': RRF=%.3f TFIDF_prob=%.3f AI_prob=%.3f Hybrid=%.3f",
+                    result.get('title', '')[:50],
+                    base_rrf,
+                    tfidf_prob,
+                    ai_prob,
+                    hybrid_score,
+                )
                 
                 reranked_results.append(result)
             
@@ -834,6 +1110,16 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
                 logger.info(f"Sorted with post type priority: {post_type_priority}")
             else:
                 reranked_results.sort(key=lambda x: x.get('hybrid_score', 0), reverse=True)
+
+            if reranked_results:
+                top_entry = reranked_results[0]
+                logger.info(
+                    "Top AI reranked result: '%s' hybrid=%.3f ai_prob=%.3f reason=%s",
+                    top_entry.get('title', '')[:80],
+                    top_entry.get('hybrid_score', 0.0),
+                    top_entry.get('ai_probability', 0.0),
+                    (top_entry.get('ai_reason') or '')[:160],
+                )
             
             # Filter out results marked as not relevant by AI
             filtered_results = []
@@ -850,7 +1136,18 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
                 'incorrect',
                 'different person',
                 'different topic',
-                'different subject'
+                'different subject',
+                'different company',
+                'different service',
+                'different location',
+                'different organization',
+                'other person',
+                'other company',
+                'not about',
+                'similar name only',
+                'mismatched service',
+                'not matching intent',
+                'outdated content',
             ]
             
             for result in reranked_results:
@@ -873,7 +1170,14 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
                     if ai_score_raw < 30 and any(keyword in ai_reason for keyword in ['not', 'different', 'wrong', 'incorrect']):
                         is_not_relevant = True
                         logger.info(f"🚫 Filtering out result '{result.get('title', '')[:50]}' - Low AI score ({ai_score_raw}) with negative reasoning")
-                
+
+                if not is_not_relevant:
+                    ai_prob_value = result.get('ai_probability', 0.0)
+                    tfidf_prob_value = result.get('tfidf_probability', 0.0)
+                    if ai_prob_value < 0.05 and tfidf_prob_value < 0.05:
+                        is_not_relevant = True
+                        logger.debug(f"🚫 Filtering out '{result.get('title', '')[:50]}' - Low combined probability (ai={ai_prob_value:.3f}, tfidf={tfidf_prob_value:.3f})")
+ 
                 if not is_not_relevant:
                     filtered_results.append(result)
                 else:
@@ -881,13 +1185,23 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
             
             if len(filtered_results) < len(reranked_results):
                 logger.info(f"🚫 Filtered out {len(reranked_results) - len(filtered_results)} not relevant results")
-            
+ 
             # Add position and priority info to ranking explanation after filtering
             for idx, result in enumerate(filtered_results):
                 if 'ranking_explanation' in result:
                     result['ranking_explanation']['final_position'] = idx + 1
                     result['ranking_explanation']['post_type_priority'] = priority_map.get(result.get('type', ''), 9999)
                     result['ranking_explanation']['priority_order'] = post_type_priority if post_type_priority else []
+
+            if filtered_results:
+                top_debug = filtered_results[0]
+                logger.info(
+                    "🏆 Top reranked result: '%s' hybrid=%.3f ai_prob=%.3f tfidf_prob=%.3f",
+                    top_debug.get('title', '')[:80],
+                    top_debug.get('hybrid_score', 0.0),
+                    top_debug.get('ai_probability', 0.0),
+                    top_debug.get('tfidf_probability', 0.0),
+                )
             
             # Calculate stats
             response_time = time.time() - start_time
@@ -904,7 +1218,9 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
                 'custom_instructions_used': bool(custom_instructions),
                 'post_type_priority_applied': bool(post_type_priority),
                 'results_reranked': len(reranked_results),
-                'results_filtered': len(reranked_results) - len(filtered_results)
+                'results_filtered': len(reranked_results) - len(filtered_results),
+                'query_context': query_context,
+                'fusion_method': 'borda_weighted'
             }
             
             logger.info(f"✅ AI reranking complete! Time: {response_time:.2f}s, Cost: ${cost:.6f}, Tokens: {tokens_used}")
@@ -923,7 +1239,9 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
                 'results': results,
                 'metadata': {
                     'ai_reranking_used': False,
-                    'ai_error': str(e)
+                    'ai_error': str(e),
+                    'query_context': query_context,
+                    'fusion_method': 'borda_weighted'
                 }
             }
     
@@ -933,7 +1251,8 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
         results: List[Dict[str, Any]],
         custom_instructions: str = "",
         ai_weight: float = 0.7,
-        post_type_priority: Optional[List[str]] = None
+        post_type_priority: Optional[List[str]] = None,
+        query_context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Use LLM to rerank search results based on semantic relevance (sync wrapper).
@@ -946,6 +1265,8 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
             results: List of search results with titles, excerpts, scores
             custom_instructions: User's custom instructions for AI
             ai_weight: How much to weight AI score (0-1)
+            post_type_priority: Optional priority ordering for result types
+            query_context: Heuristic intent/entity analysis to guide reranking
             
         Returns:
             {
@@ -958,7 +1279,7 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
         
         try:
             if not results:
-                return {'results': [], 'metadata': {}}
+                return {'results': [], 'metadata': {'query_context': query_context}}
             
             logger.info(f"AI Reranking {len(results)} results for query: '{query}'")
             
@@ -984,10 +1305,34 @@ Consider business priorities: professional expertise, service offerings, and use
             if custom_instructions:
                 system_prompt += f"\n\n🎯 CUSTOM RANKING CRITERIA (HIGHEST PRIORITY):\n{custom_instructions}"
             
+            context_snippet = self._format_query_context_for_prompt(query_context)
+            if context_snippet:
+                system_prompt += f"\n\nQUERY CONTEXT SIGNALS:\n{context_snippet}"
+
+            intent_guidance = self._build_intent_guidance(query_context)
+            if intent_guidance:
+                system_prompt += f"\n\nINTENT GUIDANCE:\n{intent_guidance}"
+            
+            entity_context_lines: List[str] = []
+            if query_context:
+                primary_entities = (query_context.get("primary_entities") or [])[:3]
+                if primary_entities:
+                    entity_context_lines.append("Primary focus: " + ", ".join(primary_entities))
+                service_entities = (query_context.get("entities", {}).get("services") or [])[:3]
+                if service_entities:
+                    entity_context_lines.append("Key services: " + ", ".join(service_entities))
+                people_entities = (query_context.get("entities", {}).get("people") or [])[:2]
+                if people_entities:
+                    entity_context_lines.append("People mentioned: " + ", ".join(people_entities))
+            entity_context_block = ""
+            if entity_context_lines:
+                entity_context_block = "\n".join(["", "CONTEXT HINTS:"] + [f"- {line}" for line in entity_context_lines])
+
             # Build user prompt
             user_prompt = f"""
 Analyze these search results for the query: "{query}"
 
+{entity_context_block}
 {results_text}
 
 📊 SCORING CRITERIA (Rate each result 0-100):
@@ -1099,56 +1444,101 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
             
             logger.info(f"Parsed {len(ai_scores)} AI scores")
             
-            # Update results with AI scores
-            reranked_results = []
+            # Map AI scores by result ID for quick lookup
+            ai_scores_map = {
+                str(item.get('id')): item
+                for item in ai_scores
+                if item.get('id') is not None
+            }
+
+            tfidf_values: List[float] = []
+            ai_values: List[float] = []
+            ai_presence: List[bool] = []
+
             for result in results:
-                # Find matching AI score
-                ai_result = next((r for r in ai_scores if str(r.get('id')) == str(result['id'])), None)
-                
-                if ai_result:
-                    tfidf_score = result.get('score', 0.0)
-                    ai_score = ai_result['ai_score'] / 100  # Normalize to 0-1
-                    
-                    # Calculate hybrid score using custom weight
-                    tfidf_weight = 1.0 - ai_weight
-                    hybrid_score = (tfidf_score * tfidf_weight) + (ai_score * ai_weight)
-                    
-                    result['ai_score'] = ai_score
-                    result['ai_reason'] = ai_result.get('reason', '')
-                    result['hybrid_score'] = hybrid_score
-                    result['score'] = hybrid_score  # Update main score for sorting
-                    
-                    # Add ranking explanation for admin users
-                    result['ranking_explanation'] = {
-                        'tfidf_score': round(tfidf_score, 4),
-                        'ai_score': round(ai_score, 4),
-                        'ai_score_raw': ai_result['ai_score'],  # 0-100 scale
-                        'hybrid_score': round(hybrid_score, 4),
-                        'tfidf_weight': round(tfidf_weight, 2),
-                        'ai_weight': round(ai_weight, 2),
-                        'ai_reason': ai_result.get('reason', ''),
-                        'post_type': result.get('type', 'unknown'),
-                        'position_before_priority': None,  # Will be set after sorting
-                    }
-                    
-                    logger.debug(f"Result '{result['title'][:50]}': TF-IDF={tfidf_score:.3f}, AI={ai_score:.3f}, Hybrid={hybrid_score:.3f}")
+                base_rrf = float(result.get('rrf_score', result.get('score', 0.0)))
+                tfidf_values.append(max(base_rrf, 0.0))
+
+                ai_entry = ai_scores_map.get(str(result.get('id')))
+                if ai_entry and isinstance(ai_entry.get('ai_score'), (int, float)):
+                    scaled_ai = max(min(ai_entry['ai_score'] / 100.0, 1.0), 0.0)
+                    ai_values.append(scaled_ai)
+                    ai_presence.append(True)
                 else:
-                    # Fallback if AI didn't score this result
-                    result['ai_score'] = result.get('score', 0.0)
-                    result['hybrid_score'] = result.get('score', 0.0)
-                    result['ai_reason'] = 'No AI scoring available'
-                    result['ranking_explanation'] = {
-                        'tfidf_score': round(result.get('score', 0.0), 4),
-                        'ai_score': None,
-                        'ai_score_raw': None,
-                        'hybrid_score': round(result.get('score', 0.0), 4),
-                        'tfidf_weight': 1.0,
-                        'ai_weight': 0.0,
-                        'ai_reason': 'No AI scoring available',
-                        'post_type': result.get('type', 'unknown'),
-                        'position_before_priority': None,
-                    }
-                    logger.warning(f"No AI score for result ID: {result['id']}")
+                    ai_values.append(0.0)
+                    ai_presence.append(False)
+
+            tfidf_probs = self._softmax(tfidf_values, temperature=0.35)
+            tfidf_rank_map = self._compute_rank_positions(tfidf_probs) if tfidf_probs else {}
+            if any(ai_presence):
+                ai_probs = self._softmax(ai_values, temperature=0.25)
+                ai_rank_map = self._compute_rank_positions(ai_probs)
+            else:
+                ai_probs = [0.0 for _ in ai_values]
+                ai_rank_map = {}
+            default_rank = len(results) + 1
+
+            reranked_results = []
+            for idx, result in enumerate(results):
+                doc_id = str(result.get('id'))
+                tfidf_prob = tfidf_probs[idx] if tfidf_probs else 0.0
+                ai_prob = ai_probs[idx] if ai_probs else 0.0
+                base_rrf = tfidf_values[idx]
+
+                ai_entry = ai_scores_map.get(doc_id)
+                if ai_presence[idx] and ai_entry:
+                    ai_score_raw = ai_entry.get('ai_score')
+                    ai_score = max(min(ai_score_raw / 100.0, 1.0), 0.0)
+                    ai_reason = ai_entry.get('reason', '')
+                else:
+                    ai_score_raw = None
+                    ai_score = None
+                    ai_reason = 'No AI scoring available'
+                    ai_prob = 0.0
+
+                tfidf_rank = tfidf_rank_map.get(idx, default_rank)
+                tfidf_rank_score = 1.0 / max(tfidf_rank, 1)
+                ai_rank = ai_rank_map.get(idx)
+                ai_rank_score = 1.0 / ai_rank if ai_rank else 0.0
+
+                probability_mix = ((1.0 - ai_weight) * tfidf_prob) + (ai_weight * ai_prob)
+                hybrid_score = ((1.0 - ai_weight) * tfidf_rank_score) + (ai_weight * ai_rank_score)
+                hybrid_score += 0.05 * probability_mix
+
+                result['ai_score'] = ai_score if ai_score is not None else ai_prob
+                result['ai_probability'] = ai_prob
+                result['tfidf_probability'] = tfidf_prob
+                result['hybrid_score'] = hybrid_score
+                result['score'] = hybrid_score
+                result['ai_reason'] = ai_reason
+                result['ranking_explanation'] = {
+                    'fusion_strategy': 'borda_weighted',
+                    'tfidf_score': round(base_rrf, 4),
+                    'tfidf_probability': round(tfidf_prob, 4),
+                    'ai_score': round(ai_score, 4) if ai_score is not None else None,
+                    'ai_probability': round(ai_prob, 4),
+                    'ai_score_raw': ai_score_raw,
+                    'tfidf_rank': tfidf_rank,
+                    'tfidf_rank_score': round(tfidf_rank_score, 4),
+                    'ai_rank': ai_rank,
+                    'ai_rank_score': round(ai_rank_score, 4) if ai_rank else None,
+                    'tfidf_weight': round(1.0 - ai_weight, 2),
+                    'ai_weight': round(ai_weight, 2),
+                    'probability_mix': round(probability_mix, 4),
+                    'hybrid_score': round(hybrid_score, 4),
+                    'ai_reason': ai_reason,
+                    'post_type': result.get('type', 'unknown'),
+                    'position_before_priority': None,
+                }
+
+                logger.debug(
+                    "Result '%s': RRF=%.3f TFIDF_prob=%.3f AI_prob=%.3f Hybrid=%.3f",
+                    result.get('title', '')[:50],
+                    base_rrf,
+                    tfidf_prob,
+                    ai_prob,
+                    hybrid_score,
+                )
                 
                 reranked_results.append(result)
             
@@ -1181,7 +1571,18 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
                 'incorrect',
                 'different person',
                 'different topic',
-                'different subject'
+                'different subject',
+                'different company',
+                'different service',
+                'different location',
+                'different organization',
+                'other person',
+                'other company',
+                'not about',
+                'similar name only',
+                'mismatched service',
+                'not matching intent',
+                'outdated content',
             ]
             
             for result in reranked_results:
@@ -1205,6 +1606,13 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
                         is_not_relevant = True
                         logger.info(f"🚫 Filtering out result '{result.get('title', '')[:50]}' - Low AI score ({ai_score_raw}) with negative reasoning")
                 
+                if not is_not_relevant:
+                    ai_prob_value = result.get('ai_probability', 0.0)
+                    tfidf_prob_value = result.get('tfidf_probability', 0.0)
+                    if ai_prob_value < 0.05 and tfidf_prob_value < 0.05:
+                        is_not_relevant = True
+                        logger.debug(f"🚫 Filtering out '{result.get('title', '')[:50]}' - Low combined probability (ai={ai_prob_value:.3f}, tfidf={tfidf_prob_value:.3f})")
+ 
                 if not is_not_relevant:
                     filtered_results.append(result)
                 else:
@@ -1235,7 +1643,9 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
                 'custom_instructions_used': bool(custom_instructions),
                 'post_type_priority_applied': bool(post_type_priority),
                 'results_reranked': len(reranked_results),
-                'results_filtered': len(reranked_results) - len(filtered_results)
+                'results_filtered': len(reranked_results) - len(filtered_results),
+                'query_context': query_context,
+                'fusion_method': 'borda_weighted'
             }
             
             logger.info(f"✅ AI reranking complete! Time: {response_time:.2f}s, Cost: ${cost:.6f}, Tokens: {tokens_used}")
@@ -1254,7 +1664,9 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
                 'results': results,
                 'metadata': {
                     'ai_reranking_used': False,
-                    'ai_error': str(e)
+                    'ai_error': str(e),
+                    'query_context': query_context,
+                    'fusion_method': 'borda_weighted'
                 }
             }
     
