@@ -112,10 +112,20 @@ class HealthChecker:
         
         try:
             # Import here to avoid circular imports
-            from qdrant_manager import QdrantManager
+            # Use the global search_system's qdrant_manager instead of creating a new one
+            from main import search_system
             
-            qdrant_manager = QdrantManager()
-            collection_info = qdrant_manager.get_collection_info()
+            if search_system is None or not hasattr(search_system, 'qdrant_manager') or search_system.qdrant_manager is None:
+                return HealthCheck(
+                    name="database",
+                    status=HealthStatus.UNHEALTHY,
+                    message="Qdrant manager not available",
+                    response_time=time.time() - start_time,
+                    details={"error": "Search system or Qdrant manager not initialized"},
+                    timestamp=datetime.utcnow()
+                )
+            
+            collection_info = search_system.qdrant_manager.get_collection_info()
             
             if collection_info:
                 status = HealthStatus.HEALTHY
@@ -154,9 +164,20 @@ class HealthChecker:
         
         try:
             # Import here to avoid circular imports
-            from cerebras_llm import CerebrasLLM
+            # Use the global search_system's llm_client instead of creating a new one
+            from main import search_system
             
-            llm_client = CerebrasLLM()
+            if search_system is None or not hasattr(search_system, 'llm_client') or search_system.llm_client is None:
+                return HealthCheck(
+                    name="llm_service",
+                    status=HealthStatus.DEGRADED,
+                    message="LLM service not configured",
+                    response_time=time.time() - start_time,
+                    details={"error": "LLM client not initialized"},
+                    timestamp=datetime.utcnow()
+                )
+            
+            llm_client = search_system.llm_client
             is_healthy = llm_client.test_connection()
             
             if is_healthy:
@@ -196,9 +217,19 @@ class HealthChecker:
         
         try:
             # Import here to avoid circular imports
-            from wordpress_client import WordPressContentFetcher
+            # Use the global wp_client instance instead of creating a new one
+            from main import wp_client
             
-            wp_client = WordPressContentFetcher()
+            if wp_client is None:
+                return HealthCheck(
+                    name="wordpress",
+                    status=HealthStatus.UNKNOWN,
+                    message="WordPress client not initialized",
+                    response_time=time.time() - start_time,
+                    details={"error": "WordPress client is None"},
+                    timestamp=datetime.utcnow()
+                )
+            
             base_api_url = (wp_client.base_url or "").strip()
             
             if not base_api_url:
@@ -217,13 +248,28 @@ class HealthChecker:
             test_url = test_url.rstrip('/')
             
             import httpx
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            # Use the same authentication as WordPressContentFetcher
+            auth = None
+            if hasattr(wp_client, 'client') and hasattr(wp_client.client, 'auth'):
+                auth = wp_client.client.auth
+            
+            async with httpx.AsyncClient(timeout=10.0, auth=auth) as client:
                 response = await client.get(f"{test_url}/wp-json/wp/v2/")
                 
                 if response.status_code == 200:
                     status = HealthStatus.HEALTHY
                     message = "WordPress connection healthy"
                     details = {"base_url": wp_client.base_url}
+                elif response.status_code == 403:
+                    # 403 might mean auth is required or REST API is restricted
+                    # This is not necessarily unhealthy if we have credentials configured
+                    status = HealthStatus.DEGRADED
+                    message = "WordPress REST API requires authentication or is restricted"
+                    details = {
+                        "status_code": response.status_code,
+                        "base_url": wp_client.base_url,
+                        "note": "This may be normal if REST API requires authentication or a security plugin is active"
+                    }
                 else:
                     status = HealthStatus.DEGRADED
                     message = f"WordPress connection degraded (status: {response.status_code})"
@@ -257,9 +303,19 @@ class HealthChecker:
         
         try:
             # Import here to avoid circular imports
-            from simple_hybrid_search import SimpleHybridSearch
+            # Use the global search_system instance instead of creating a new one
+            from main import search_system
             
-            search_system = SimpleHybridSearch()
+            if search_system is None:
+                return HealthCheck(
+                    name="search_system",
+                    status=HealthStatus.UNHEALTHY,
+                    message="Search system not initialized",
+                    response_time=time.time() - start_time,
+                    details={"error": "Search system is None"},
+                    timestamp=datetime.utcnow()
+                )
+            
             stats = search_system.get_stats()
             
             if stats and stats.get('total_documents', 0) > 0:

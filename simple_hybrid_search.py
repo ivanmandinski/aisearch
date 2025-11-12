@@ -138,8 +138,8 @@ class SimpleHybridSearch:
         self.documents = []
         self.document_texts = []
         
-        # Initialize with sample data for testing (fallback)
-        self._initialize_with_sample_data()
+        # Don't initialize with sample data on startup - only when actually needed
+        # Sample data will be initialized lazily if no real data is available
     
     def _get_embedding_model(self):
         """
@@ -172,8 +172,12 @@ class SimpleHybridSearch:
         """Property accessor for embedding model (lazy-loaded)."""
         return self._get_embedding_model()
     
-    def _initialize_with_sample_data(self):
-        """Initialize with sample data for testing."""
+    def _ensure_sample_data_initialized(self):
+        """Lazily initialize with sample data only if no real data is available."""
+        # Only initialize if we don't have any documents or TF-IDF matrix
+        if self.tfidf_matrix is not None or len(self.documents) > 0:
+            return  # Already have data, don't initialize sample data
+        
         try:
             sample_docs = [
                 {
@@ -234,7 +238,7 @@ class SimpleHybridSearch:
             self.document_texts = document_texts
             self.documents = sample_docs
             
-            logger.info(f"Initialized with {len(sample_docs)} sample documents")
+            logger.debug(f"Lazily initialized with {len(sample_docs)} sample documents (no real data available)")
             
         except Exception as e:
             logger.error(f"Error initializing sample data: {e}")
@@ -1075,6 +1079,12 @@ Return ONLY the queries, one per line, without numbering or bullet points.
         try:
             collection_info = self.qdrant_manager.get_collection_info()
             
+            # Get actual document count from Qdrant (points_count), not from in-memory sample data
+            total_docs = collection_info.get('points_count', 0)
+            
+            # Ensure total_docs is an integer
+            total_docs = int(total_docs) if total_docs is not None else 0
+            
             # Use vectors_count as the primary metric (total vectors stored)
             # indexed_vectors_count is about HNSW index status, which may be deferred
             vectors_count = collection_info.get('vectors_count') or 0
@@ -1084,17 +1094,29 @@ Return ONLY the queries, one per line, without numbering or bullet points.
             vectors_count = int(vectors_count) if vectors_count is not None else 0
             indexed_vectors_count = int(indexed_vectors_count) if indexed_vectors_count is not None else 0
             
-            # If indexed_vectors_count is 0 but we have vectors, it means indexing is deferred
-            # Still show the actual vector count
-            vectors_stored = vectors_count if vectors_count > 0 else indexed_vectors_count
+            # Determine the actual number of vectors stored
+            # In Qdrant, each point typically has one vector, so if vectors_count is 0
+            # but we have points, use points_count as a fallback
+            if vectors_count > 0:
+                vectors_stored = vectors_count
+            elif indexed_vectors_count > 0:
+                vectors_stored = indexed_vectors_count
+            elif total_docs > 0:
+                # Fallback: if we have points but no vector count, assume each point has a vector
+                vectors_stored = total_docs
+            else:
+                vectors_stored = 0
+            
+            # Log for debugging
+            logger.debug(f"Stats: points_count={total_docs}, vectors_count={vectors_count}, indexed_vectors_count={indexed_vectors_count}, vectors_stored={vectors_stored}")
             
             return {
                 'collection_name': self.qdrant_manager.collection_name,
-                'total_documents': collection_info.get('points_count', 0),
+                'total_documents': total_docs,
                 'indexed_vectors': vectors_stored,  # Show actual vectors stored
                 'status': collection_info.get('status', 'unknown'),
                 'tfidf_fitted': self.tfidf_matrix is not None,
-                'document_count': len(self.document_texts)
+                'document_count': total_docs  # Use Qdrant count, not in-memory sample count
             }
         except Exception as e:
             logger.error(f"Error getting stats: {e}")
@@ -1252,6 +1274,15 @@ RULES:
     ) -> List[Dict[str, Any]]:
         """Perform TF-IDF based search with offset support."""
         try:
+            # Lazy initialization: only initialize sample data if no real data is available
+            if self.tfidf_matrix is None or len(self.documents) == 0:
+                self._ensure_sample_data_initialized()
+            
+            # If still no data, return empty results
+            if self.tfidf_matrix is None or len(self.documents) == 0:
+                logger.warning("No documents available for TF-IDF search")
+                return []
+            
             if query_context is None:
                 query_context = getattr(self, "_last_query_analysis", None)
             if behavioral_maps is None:

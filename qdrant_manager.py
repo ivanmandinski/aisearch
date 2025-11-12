@@ -391,14 +391,47 @@ class QdrantManager:
                 except:
                     vector_size = 0
                 
+                # Get vector counts - handle different Qdrant API versions
+                vectors_count = 0
+                indexed_vectors_count = 0
+                
+                # Try to get vectors_count - it might be an attribute or property
+                try:
+                    if hasattr(collection_info, 'vectors_count'):
+                        vectors_count = collection_info.vectors_count or 0
+                    elif hasattr(collection_info, 'vectors') and hasattr(collection_info.vectors, 'count'):
+                        vectors_count = collection_info.vectors.count or 0
+                except Exception as e:
+                    logger.debug(f"Could not get vectors_count: {e}")
+                
+                # Try to get indexed_vectors_count
+                try:
+                    if hasattr(collection_info, 'indexed_vectors_count'):
+                        indexed_vectors_count = collection_info.indexed_vectors_count or 0
+                    elif hasattr(collection_info, 'vectors') and hasattr(collection_info.vectors, 'indexed_count'):
+                        indexed_vectors_count = collection_info.vectors.indexed_count or 0
+                except Exception as e:
+                    logger.debug(f"Could not get indexed_vectors_count: {e}")
+                
+                # Get points_count
+                points_count = 0
+                try:
+                    if hasattr(collection_info, 'points_count'):
+                        points_count = collection_info.points_count or 0
+                except Exception as e:
+                    logger.debug(f"Could not get points_count: {e}")
+                
+                # Log what we're getting for debugging
+                logger.debug(f"Qdrant collection info - points_count: {points_count}, vectors_count: {vectors_count}, indexed_vectors_count: {indexed_vectors_count}")
+                
                 return {
                     "name": self.collection_name,
                     "vector_size": vector_size,
-                    "vectors_count": collection_info.vectors_count,
-                    "indexed_vectors_count": collection_info.indexed_vectors_count,
-                    "points_count": collection_info.points_count,
-                    "segments_count": collection_info.segments_count,
-                    "status": collection_info.status
+                    "vectors_count": vectors_count,
+                    "indexed_vectors_count": indexed_vectors_count,
+                    "points_count": points_count,
+                    "segments_count": getattr(collection_info, 'segments_count', 0),
+                    "status": getattr(collection_info, 'status', 'unknown')
                 }
             except Exception as e:
                 error_msg = str(e) if str(e) else f"{type(e).__name__} (no message)"
@@ -436,14 +469,41 @@ class QdrantManager:
                                     except:
                                         vector_size = 0
                                     
+                                    # Get vector counts - handle different Qdrant API versions
+                                    vectors_count = 0
+                                    indexed_vectors_count = 0
+                                    
+                                    try:
+                                        if hasattr(collection_info, 'vectors_count'):
+                                            vectors_count = collection_info.vectors_count or 0
+                                        elif hasattr(collection_info, 'vectors') and hasattr(collection_info.vectors, 'count'):
+                                            vectors_count = collection_info.vectors.count or 0
+                                    except Exception as e:
+                                        logger.debug(f"Could not get vectors_count: {e}")
+                                    
+                                    try:
+                                        if hasattr(collection_info, 'indexed_vectors_count'):
+                                            indexed_vectors_count = collection_info.indexed_vectors_count or 0
+                                        elif hasattr(collection_info, 'vectors') and hasattr(collection_info.vectors, 'indexed_count'):
+                                            indexed_vectors_count = collection_info.vectors.indexed_count or 0
+                                    except Exception as e:
+                                        logger.debug(f"Could not get indexed_vectors_count: {e}")
+                                    
+                                    points_count = 0
+                                    try:
+                                        if hasattr(collection_info, 'points_count'):
+                                            points_count = collection_info.points_count or 0
+                                    except Exception as e:
+                                        logger.debug(f"Could not get points_count: {e}")
+                                    
                                     return {
                                         "name": self.collection_name,
                                         "vector_size": vector_size,
-                                        "vectors_count": collection_info.vectors_count,
-                                        "indexed_vectors_count": collection_info.indexed_vectors_count,
-                                        "points_count": collection_info.points_count,
-                                        "segments_count": collection_info.segments_count,
-                                        "status": collection_info.status
+                                        "vectors_count": vectors_count,
+                                        "indexed_vectors_count": indexed_vectors_count,
+                                        "points_count": points_count,
+                                        "segments_count": getattr(collection_info, 'segments_count', 0),
+                                        "status": getattr(collection_info, 'status', 'unknown')
                                     }
                                 except Exception as retry_e:
                                     logger.error(f"Error getting collection info after creation: {retry_e}")
