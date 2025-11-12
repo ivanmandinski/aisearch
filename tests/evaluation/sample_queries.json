@@ -1,0 +1,26 @@
+[
+  {
+    "query": "Energy Audit Services",
+    "notes": "Should return the sample energy audit page from built-in corpus.",
+    "expected_urls": [
+      "https://www.scsengineers.com/energy-audit/"
+    ],
+    "expected_keywords": [
+      "energy audit",
+      "services",
+      "scs engineers"
+    ]
+  },
+  {
+    "query": "waste management solutions",
+    "notes": "Verifies hybrid ranking for waste management content.",
+    "expected_urls": [
+      "https://www.scsengineers.com/waste-management/"
+    ],
+    "expected_keywords": [
+      "waste management",
+      "solutions"
+    ]
+  }
+]
+

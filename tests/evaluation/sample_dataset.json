@@ -1,0 +1,23 @@
+[
+  {
+    "query": "hazardous waste management services",
+    "relevant_urls": [
+      "https://www.example.com/services/hazardous-waste-management",
+      "https://www.example.com/services/environmental-compliance"
+    ]
+  },
+  {
+    "query": "James Walsh SCS Engineers",
+    "relevant_urls": [
+      "https://www.example.com/people/james-walsh"
+    ]
+  },
+  {
+    "query": "pfas remediation guidance",
+    "relevant_urls": [
+      "https://www.example.com/services/pfas-remediation",
+      "https://www.example.com/blog/pfas-remediation-overview"
+    ]
+  }
+]
+

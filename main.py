@@ -7,10 +7,12 @@ admin dashboards.
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -56,6 +58,45 @@ llm_client: Optional[CerebrasLLM] = None
 wp_client: Optional[WordPressContentFetcher] = None
 
 
+BASE_DIR = Path(__file__).resolve().parent
+WORDPRESS_SOURCE_OVERRIDE_FILE = BASE_DIR / "wordpress_source_override.json"
+
+
+def _persist_wordpress_source_overrides() -> None:
+    """Persist the active WordPress source configuration to disk."""
+    data = {
+        "base_url": settings.wordpress_api_url or "",
+        "username": settings.wordpress_username or "",
+        "password": settings.wordpress_password or "",
+    }
+
+    try:
+        WORDPRESS_SOURCE_OVERRIDE_FILE.write_text(json.dumps(data, indent=2))
+    except Exception as exc:
+        logger.warning("Failed to persist WordPress source overrides: %s", exc)
+
+
+def _load_wordpress_source_overrides() -> None:
+    """Load any persisted WordPress source configuration."""
+    if not WORDPRESS_SOURCE_OVERRIDE_FILE.exists():
+        return
+
+    try:
+        data = json.loads(WORDPRESS_SOURCE_OVERRIDE_FILE.read_text())
+    except Exception as exc:
+        logger.warning("Failed to read WordPress source overrides: %s", exc)
+        return
+
+    base_url = (data.get("base_url") or "").strip()
+    username = data.get("username") or ""
+    password = data.get("password") or ""
+
+    if base_url:
+        settings.wordpress_api_url = base_url.rstrip("/")
+    settings.wordpress_username = username
+    settings.wordpress_password = password
+
+
 async def update_wordpress_client(
     base_url: Optional[str] = None,
     username: Optional[str] = None,
@@ -64,31 +105,37 @@ async def update_wordpress_client(
     """Rebuild the global WordPress client when admin overrides change."""
     global wp_client
 
-    if not base_url:
+    normalized = base_url.strip().rstrip("/") if base_url else (settings.wordpress_api_url or "").rstrip("/")
+    current_base = (settings.wordpress_api_url or "").rstrip("/")
+    user = (username.strip() if isinstance(username, str) else settings.wordpress_username or "").strip()
+    pwd = (password.strip() if isinstance(password, str) else settings.wordpress_password or "").strip()
+
+    changed = False
+    if base_url and normalized != current_base:
+        changed = True
+    if username is not None and user != (settings.wordpress_username or ""):
+        changed = True
+    if password is not None and pwd != (settings.wordpress_password or ""):
+        changed = True
+
+    if not changed:
         return
-
-    normalized = base_url.strip().rstrip('/')
-    current_base = (settings.wordpress_api_url or "").rstrip('/')
-    user = (username or "").strip()
-    pwd = (password or "").strip()
-
-    if (
-        normalized == current_base
-        and (not user or user == (settings.wordpress_username or ""))
-        and (not pwd or pwd == (settings.wordpress_password or ""))
-    ):
-        return
-
-    logger.info("Switching WordPress content source to %s", normalized)
 
     settings.wordpress_api_url = normalized
-    if user:
+    if username is not None:
         settings.wordpress_username = user
-    if pwd:
+    if password is not None:
         settings.wordpress_password = pwd
 
+    logger.info("Switching WordPress content source to %s", normalized or "(unset)")
+
     old_client = wp_client
-    wp_client = WordPressContentFetcher(base_url=normalized, username=user or None, password=pwd or None)
+    wp_client = WordPressContentFetcher(
+        base_url=settings.wordpress_api_url or None,
+        username=settings.wordpress_username or None,
+        password=settings.wordpress_password or None,
+    )
+    _persist_wordpress_source_overrides()
 
     if old_client:
         try:
@@ -194,6 +241,8 @@ async def on_startup() -> None:
 
     logger.info("Starting hybrid search service...")
 
+    _load_wordpress_source_overrides()
+
     if search_system is None:
         try:
             search_system = SimpleHybridSearch()
@@ -212,7 +261,11 @@ async def on_startup() -> None:
 
     if wp_client is None:
         try:
-            wp_client = WordPressContentFetcher(base_url=settings.wordpress_api_url)
+            wp_client = WordPressContentFetcher(
+                base_url=settings.wordpress_api_url or None,
+                username=settings.wordpress_username or None,
+                password=settings.wordpress_password or None,
+            )
             logger.info("WordPress content fetcher initialised")
         except Exception as exc:
             logger.warning("Failed to initialise WordPressContentFetcher: %s", exc)
@@ -335,6 +388,14 @@ async def search_endpoint(request: SearchRequest) -> Dict[str, Any]:
 @app.post("/index")
 async def index_endpoint(request: IndexRequest, background_tasks: BackgroundTasks) -> Dict[str, Any]:
     logger.info("Received indexing request (force=%s)", request.force_reindex)
+
+    if request.wordpress_api_url or request.wordpress_username or request.wordpress_password:
+        await update_wordpress_client(
+            base_url=request.wordpress_api_url,
+            username=request.wordpress_username,
+            password=request.wordpress_password,
+        )
+
     if wp_client is None:
         return service_unavailable("index", {"message": "WordPress client unavailable"})
 
@@ -379,6 +440,37 @@ async def quick_health_endpoint() -> JSONResponse:
         )
 
 
+@app.get("/stats")
+async def stats_endpoint() -> Dict[str, Any]:
+    """Get search and indexing statistics."""
+    if search_system is None:
+        return create_error_response(
+            SearchError("Search system not initialised", details={"message": "Search system not available"}),
+            request_id=str(uuid.uuid4()),
+        )
+    
+    try:
+        index_stats = search_system.get_stats()
+        service_info = {
+            "api_version": settings.api_version,
+            "max_search_results": settings.max_search_results,
+            "search_timeout": settings.search_timeout,
+        }
+        
+        return create_success_response(
+            {
+                "index_stats": index_stats,
+                "service_info": service_info,
+            }
+        )
+    except Exception as exc:
+        logger.exception("Failed to get stats: %s", exc)
+        return create_error_response(
+            SearchError("Failed to retrieve statistics", details={"error": str(exc)}),
+            request_id=str(uuid.uuid4()),
+        )
+
+
 @app.get("/")
 async def root_endpoint() -> Dict[str, Any]:
     return {
@@ -390,5 +482,6 @@ async def root_endpoint() -> Dict[str, Any]:
             "index": "POST /index",
             "health": "GET /health",
             "health_quick": "GET /health/quick",
+            "stats": "GET /stats",
         },
     }
