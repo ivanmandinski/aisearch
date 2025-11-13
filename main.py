@@ -357,6 +357,25 @@ async def search_endpoint(request: SearchRequest) -> Dict[str, Any]:
     total_available = search_metadata.get("total_results", len(results))
     pagination = _build_pagination(total_available, request.limit, request.offset, len(results))
 
+    # Generate AI answer if requested (only on first page)
+    answer = None
+    if request.include_answer and request.offset == 0:
+        if llm_client and results:
+            try:
+                logger.info("Generating AI answer for query: %s", search_query)
+                # Use top results for answer generation
+                from constants import MAX_SEARCH_RESULTS_FOR_ANSWER
+                top_results = results[:MAX_SEARCH_RESULTS_FOR_ANSWER]
+                answer = llm_client.generate_answer(search_query, top_results, ai_instructions)
+                logger.info("AI answer generated successfully (length: %d)", len(answer) if answer else 0)
+            except Exception as exc:
+                logger.error("Failed to generate AI answer: %s", exc)
+                answer = None
+        elif not llm_client:
+            logger.warning("LLM client not available, cannot generate answer")
+        elif not results:
+            logger.info("No results to generate answer from")
+
     elapsed = (datetime.utcnow() - start_time).total_seconds()
     metadata = {
         "query": request.query,
@@ -372,12 +391,13 @@ async def search_endpoint(request: SearchRequest) -> Dict[str, Any]:
         },
         "behavioral_signals": request.behavioral_signals,
         "behavioral_applied": search_metadata.get("behavioral_applied"),
+        "answer": answer,  # Include answer in metadata for frontend
         **search_metadata,
     }
 
     payload = {
         "results": results,
-        "answer": None,
+        "answer": answer,  # Also include at top level for compatibility
         "metadata": metadata,
         "pagination": pagination,
     }
