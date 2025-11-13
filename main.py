@@ -387,7 +387,7 @@ async def search_endpoint(request: SearchRequest) -> Dict[str, Any]:
 
 @app.post("/index")
 async def index_endpoint(request: IndexRequest, background_tasks: BackgroundTasks) -> Dict[str, Any]:
-    logger.info("Received indexing request (force=%s)", request.force_reindex)
+    logger.info("Received indexing request (force=%s, post_types=%s)", request.force_reindex, request.post_types)
 
     if request.wordpress_api_url or request.wordpress_username or request.wordpress_password:
         await update_wordpress_client(
@@ -399,12 +399,68 @@ async def index_endpoint(request: IndexRequest, background_tasks: BackgroundTask
     if wp_client is None:
         return service_unavailable("index", {"message": "WordPress client unavailable"})
 
-    return create_success_response(
-        {
-            "status": "queued",
-            "message": "Indexing request acknowledged. Hook background processing here if desired.",
-        }
-    )
+    if search_system is None:
+        return service_unavailable("index", {"message": "Search system not initialised"})
+
+    try:
+        # Log post types being indexed
+        if request.post_types:
+            logger.info(f"🎯 Indexing selected post types: {request.post_types}")
+        else:
+            logger.info("📋 No post types specified - will index all public post types with REST API support")
+
+        # Fetch content from WordPress
+        logger.info("Starting content fetch from WordPress...")
+        all_content = await wp_client.get_all_content(selected_types=request.post_types)
+        
+        if not all_content:
+            logger.warning("No content fetched from WordPress")
+            return create_success_response(
+                {
+                    "status": "completed",
+                    "message": "No content to index",
+                    "indexed_count": 0,
+                    "post_types": request.post_types or [],
+                }
+            )
+
+        # Log breakdown by post type
+        type_counts = {}
+        for item in all_content:
+            item_type = item.get('type', 'unknown')
+            type_counts[item_type] = type_counts.get(item_type, 0) + 1
+        
+        logger.info(f"📊 Content fetched: {len(all_content)} total items")
+        logger.info(f"📊 Breakdown by post type: {type_counts}")
+
+        # Index the content
+        logger.info(f"Starting indexing of {len(all_content)} documents...")
+        success = await search_system.index_documents(all_content, clear_existing=request.force_reindex)
+        
+        if success:
+            logger.info(f"✅ Successfully indexed {len(all_content)} documents")
+            return create_success_response(
+                {
+                    "status": "completed",
+                    "message": f"Successfully indexed {len(all_content)} documents",
+                    "indexed_count": len(all_content),
+                    "post_types": request.post_types or list(type_counts.keys()),
+                    "post_type_breakdown": type_counts,
+                }
+            )
+        else:
+            logger.error("❌ Indexing failed")
+            return create_error_response(
+                SearchError("Indexing failed", details={"message": "Failed to index documents"}),
+                request_id=str(uuid.uuid4()),
+            )
+
+    except Exception as exc:
+        logger.exception("Indexing error: %s", exc)
+        return create_error_response(
+            SearchError("Indexing failed", details={"error": str(exc)}),
+            request_id=str(uuid.uuid4()),
+        )
 
 
 @app.get("/health")

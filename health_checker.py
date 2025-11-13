@@ -253,27 +253,38 @@ class HealthChecker:
             if hasattr(wp_client, 'client') and hasattr(wp_client.client, 'auth'):
                 auth = wp_client.client.auth
             
-            async with httpx.AsyncClient(timeout=10.0, auth=auth) as client:
-                response = await client.get(f"{test_url}/wp-json/wp/v2/")
-                
-                if response.status_code == 200:
-                    status = HealthStatus.HEALTHY
-                    message = "WordPress connection healthy"
-                    details = {"base_url": wp_client.base_url}
-                elif response.status_code == 403:
-                    # 403 might mean auth is required or REST API is restricted
-                    # This is not necessarily unhealthy if we have credentials configured
-                    status = HealthStatus.DEGRADED
-                    message = "WordPress REST API requires authentication or is restricted"
-                    details = {
-                        "status_code": response.status_code,
-                        "base_url": wp_client.base_url,
-                        "note": "This may be normal if REST API requires authentication or a security plugin is active"
-                    }
-                else:
-                    status = HealthStatus.DEGRADED
-                    message = f"WordPress connection degraded (status: {response.status_code})"
-                    details = {"status_code": response.status_code}
+            # Temporarily suppress httpx INFO logging to avoid noise from 403 responses
+            # 403 is expected when REST API requires authentication or is protected by security plugins
+            httpx_logger = logging.getLogger("httpx")
+            original_level = httpx_logger.level
+            httpx_logger.setLevel(logging.WARNING)
+            
+            try:
+                async with httpx.AsyncClient(timeout=10.0, auth=auth) as client:
+                    response = await client.get(f"{test_url}/wp-json/wp/v2/", follow_redirects=True)
+                    
+                    if response.status_code == 200:
+                        status = HealthStatus.HEALTHY
+                        message = "WordPress connection healthy"
+                        details = {"base_url": wp_client.base_url}
+                    elif response.status_code == 403:
+                        # 403 might mean auth is required or REST API is restricted
+                        # This is not necessarily unhealthy if we have credentials configured
+                        # Don't log this as an error - it's expected behavior for protected endpoints
+                        status = HealthStatus.DEGRADED
+                        message = "WordPress REST API requires authentication or is restricted"
+                        details = {
+                            "status_code": response.status_code,
+                            "base_url": wp_client.base_url,
+                            "note": "This may be normal if REST API requires authentication or a security plugin is active"
+                        }
+                    else:
+                        status = HealthStatus.DEGRADED
+                        message = f"WordPress connection degraded (status: {response.status_code})"
+                        details = {"status_code": response.status_code}
+            finally:
+                # Restore original logging level
+                httpx_logger.setLevel(original_level)
             
             response_time = time.time() - start_time
             

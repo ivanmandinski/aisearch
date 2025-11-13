@@ -1075,7 +1075,7 @@ Return ONLY the queries, one per line, without numbering or bullet points.
             return {}
     
     def get_stats(self) -> Dict[str, Any]:
-        """Get search statistics."""
+        """Get search statistics including post type breakdown."""
         try:
             collection_info = self.qdrant_manager.get_collection_info()
             
@@ -1107,6 +1107,49 @@ Return ONLY the queries, one per line, without numbering or bullet points.
             else:
                 vectors_stored = 0
             
+            # Get post type breakdown by scrolling through all points
+            post_type_breakdown = {}
+            indexed_post_types = []
+            
+            if total_docs > 0 and self.qdrant_manager:
+                try:
+                    # Scroll through all points to get post type breakdown
+                    from qdrant_client.models import ScrollRequest
+                    offset = None
+                    post_type_counts = {}
+                    
+                    while True:
+                        scroll_result = self.qdrant_manager.client.scroll(
+                            collection_name=self.qdrant_manager.collection_name,
+                            limit=100,
+                            offset=offset,
+                            with_payload=True,
+                            with_vectors=False
+                        )
+                        
+                        points = scroll_result[0]
+                        if not points:
+                            break
+                        
+                        # Count by post type
+                        for point in points:
+                            if point.payload and 'type' in point.payload:
+                                post_type = str(point.payload['type'])
+                                post_type_counts[post_type] = post_type_counts.get(post_type, 0) + 1
+                        
+                        offset = scroll_result[1]
+                        if offset is None:
+                            break
+                    
+                    post_type_breakdown = post_type_counts
+                    indexed_post_types = sorted(post_type_counts.keys())
+                    
+                    logger.debug(f"Post type breakdown: {post_type_breakdown}")
+                    
+                except Exception as e:
+                    logger.warning(f"Could not get post type breakdown: {e}")
+                    # Continue without breakdown
+            
             # Log for debugging
             logger.debug(f"Stats: points_count={total_docs}, vectors_count={vectors_count}, indexed_vectors_count={indexed_vectors_count}, vectors_stored={vectors_stored}")
             
@@ -1116,7 +1159,9 @@ Return ONLY the queries, one per line, without numbering or bullet points.
                 'indexed_vectors': vectors_stored,  # Show actual vectors stored
                 'status': collection_info.get('status', 'unknown'),
                 'tfidf_fitted': self.tfidf_matrix is not None,
-                'document_count': total_docs  # Use Qdrant count, not in-memory sample count
+                'document_count': total_docs,  # Use Qdrant count, not in-memory sample count
+                'post_type_breakdown': post_type_breakdown,  # Count per post type
+                'indexed_post_types': indexed_post_types  # List of post types in index
             }
         except Exception as e:
             logger.error(f"Error getting stats: {e}")
