@@ -281,6 +281,36 @@ class QdrantManager:
             logger.error(f"Error upserting documents: {e}")
             return False
     
+    def delete_document(self, document_id: str) -> bool:
+        """Delete a single document from the collection by ID."""
+        # Check health first
+        if not self.check_health():
+            logger.warning(f"Qdrant is unavailable, skipping document deletion")
+            return False
+        
+        try:
+            # Convert document ID to point ID (same logic as upsert)
+            try:
+                if isinstance(document_id, (int, float)):
+                    point_id = int(document_id) % (10 ** 18)
+                else:
+                    point_id = abs(hash(str(document_id))) % (10 ** 18)
+            except:
+                point_id = abs(hash(str(document_id))) % (10 ** 18)
+            
+            # Delete the point
+            self.client.delete(
+                collection_name=self.collection_name,
+                points_selector=[point_id]
+            )
+            
+            logger.info(f"Successfully deleted document {document_id} (point ID: {point_id})")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deleting document {document_id}: {e}")
+            return False
+    
     def hybrid_search(
         self, 
         query: str, 

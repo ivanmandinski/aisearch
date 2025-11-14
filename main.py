@@ -157,15 +157,11 @@ class SearchRequest(BaseModel):
     include_answer: bool = Field(default=False)
     filters: Optional[SearchFilters] = None
     ai_instructions: Optional[str] = None
-    enable_ai_reranking: Optional[bool] = Field(default=True)
-    ai_weight: float = Field(default=0.7, ge=0.0, le=1.0)
-    ai_reranking_instructions: Optional[str] = None
-    strict_ai_answer_mode: Optional[bool] = Field(default=True)
-    post_type_priority: Optional[List[str]] = None
-    behavioral_signals: Optional[Dict[str, Any]] = None
-    wordpress_api_url: Optional[str] = None
-    wordpress_username: Optional[str] = None
-    wordpress_password: Optional[str] = None
+
+
+class IndexSingleRequest(BaseModel):
+    """Request model for single document indexing."""
+    document: Dict[str, Any] = Field(..., description="Document to index")
 
 
 class IndexRequest(BaseModel):
@@ -547,6 +543,88 @@ async def stats_endpoint() -> Dict[str, Any]:
         )
 
 
+@app.post("/index-single")
+async def index_single_endpoint(request: IndexSingleRequest) -> Dict[str, Any]:
+    """Index a single document (for real-time updates)."""
+    logger.info("Received single document indexing request")
+    
+    if search_system is None:
+        return service_unavailable("index-single", {"message": "Search system not initialised"})
+    
+    try:
+        document = request.document
+        
+        # Validate required fields
+        if "id" not in document:
+            return create_error_response(
+                ValidationError("Document must have an 'id' field", field="document.id"),
+                request_id=str(uuid.uuid4()),
+            )
+        
+        # Index the single document (don't clear existing collection)
+        success = await search_system.index_documents([document], clear_existing=False)
+        
+        if success:
+            title = document.get("title", document.get("id", "Unknown"))
+            logger.info(f"✅ Successfully indexed single document: {title}")
+            return create_success_response(
+                {
+                    "status": "completed",
+                    "message": f"Successfully indexed: {title}",
+                    "document_id": document.get("id"),
+                }
+            )
+        else:
+            logger.error("❌ Single document indexing failed")
+            return create_error_response(
+                SearchError("Indexing failed", details={"message": "Failed to index document"}),
+                request_id=str(uuid.uuid4()),
+            )
+    
+    except Exception as exc:
+        logger.exception("Single document indexing error: %s", exc)
+        return create_error_response(
+            SearchError("Indexing failed", details={"error": str(exc)}),
+            request_id=str(uuid.uuid4()),
+        )
+
+
+@app.delete("/delete-document/{document_id}")
+async def delete_document_endpoint(document_id: str) -> Dict[str, Any]:
+    """Delete a document from the search index."""
+    logger.info(f"Received delete request for document: {document_id}")
+    
+    if search_system is None or search_system.qdrant_manager is None:
+        return service_unavailable("delete-document", {"message": "Search system not initialised"})
+    
+    try:
+        # Delete the document
+        success = search_system.qdrant_manager.delete_document(document_id)
+        
+        if success:
+            logger.info(f"✅ Successfully deleted document: {document_id}")
+            return create_success_response(
+                {
+                    "status": "completed",
+                    "message": f"Successfully deleted document: {document_id}",
+                    "document_id": document_id,
+                }
+            )
+        else:
+            logger.error(f"❌ Failed to delete document: {document_id}")
+            return create_error_response(
+                SearchError("Deletion failed", details={"message": f"Failed to delete document: {document_id}"}),
+                request_id=str(uuid.uuid4()),
+            )
+    
+    except Exception as exc:
+        logger.exception("Document deletion error: %s", exc)
+        return create_error_response(
+            SearchError("Deletion failed", details={"error": str(exc)}),
+            request_id=str(uuid.uuid4()),
+        )
+
+
 @app.get("/")
 async def root_endpoint() -> Dict[str, Any]:
     return {
@@ -556,6 +634,8 @@ async def root_endpoint() -> Dict[str, Any]:
         "endpoints": {
             "search": "POST /search",
             "index": "POST /index",
+            "index_single": "POST /index-single",
+            "delete_document": "DELETE /delete-document/{document_id}",
             "health": "GET /health",
             "health_quick": "GET /health/quick",
             "stats": "GET /stats",
