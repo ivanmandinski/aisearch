@@ -7,6 +7,7 @@ admin dashboards.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -165,6 +166,7 @@ class SearchRequest(BaseModel):
     ai_weight: float = Field(default=0.7, ge=0.0, le=1.0, description="Weight for AI score")
     post_type_priority: Optional[List[str]] = Field(default=None, description="Post types in priority order")
     behavioral_signals: Optional[Dict[str, Any]] = Field(default=None, description="Behavioral signals for ranking")
+    rewrite_excerpts: bool = Field(default=False, description="Whether to use AI to rewrite excerpts")
 
 
 class IndexSingleRequest(BaseModel):
@@ -362,6 +364,33 @@ async def search_endpoint(request: SearchRequest) -> Dict[str, Any]:
 
     if request.filters:
         results = _apply_filters(results, request.filters)
+
+    # Rewrite excerpts using AI if enabled
+    if request.rewrite_excerpts and llm_client and results:
+        try:
+            logger.info("Rewriting excerpts for %d results", len(results))
+            # Rewrite excerpts in parallel for better performance
+            rewrite_tasks = []
+            for result in results:
+                excerpt = result.get("excerpt", "")
+                if excerpt and excerpt.strip():
+                    title = result.get("title", "")
+                    task = llm_client.rewrite_excerpt_async(excerpt, search_query, title)
+                    rewrite_tasks.append((result, task))
+            
+            # Execute all rewrites in parallel
+            if rewrite_tasks:
+                rewritten_excerpts = await asyncio.gather(*[task for _, task in rewrite_tasks], return_exceptions=True)
+                for (result, _), rewritten in zip(rewrite_tasks, rewritten_excerpts):
+                    if not isinstance(rewritten, Exception) and rewritten:
+                        result["excerpt"] = rewritten
+                        result["excerpt_rewritten"] = True
+                    else:
+                        result["excerpt_rewritten"] = False
+            logger.info("Excerpt rewriting completed")
+        except Exception as exc:
+            logger.warning("Failed to rewrite excerpts: %s", exc)
+            # Continue with original excerpts if rewriting fails
 
     total_available = search_metadata.get("total_results", len(results))
     pagination = _build_pagination(total_available, request.limit, request.offset, len(results))

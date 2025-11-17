@@ -143,6 +143,54 @@ Return only the queries, one per line, without numbering or bullet points.
             logger.error(f"Error expanding query: {e}")
             return [query]
     
+    async def rewrite_excerpt_async(self, excerpt: str, query: str, title: str = "") -> str:
+        """Rewrite an excerpt to better match the search query using AI."""
+        try:
+            if not excerpt or not excerpt.strip():
+                return excerpt
+            
+            prompt = f"""Rewrite the following excerpt to better match the search query. Make it more relevant and contextual.
+
+Search Query: "{query}"
+Document Title: "{title}"
+Original Excerpt: "{excerpt}"
+
+Instructions:
+- Keep the rewritten excerpt concise (2-3 sentences, max 200 characters)
+- Highlight information that directly relates to the search query
+- Maintain accuracy - only use information from the original excerpt
+- Make it more engaging and relevant to what the user is searching for
+- If the excerpt already matches well, you can keep it mostly the same
+
+Return ONLY the rewritten excerpt, nothing else."""
+            
+            response = await self.async_client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant that rewrites text excerpts to be more relevant to search queries."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=150
+            )
+            
+            rewritten = response.choices[0].message.content.strip()
+            # Remove quotes if the model wrapped it
+            if rewritten.startswith('"') and rewritten.endswith('"'):
+                rewritten = rewritten[1:-1]
+            if rewritten.startswith("'") and rewritten.endswith("'"):
+                rewritten = rewritten[1:-1]
+            
+            # Limit length
+            if len(rewritten) > 300:
+                rewritten = rewritten[:297] + "..."
+            
+            return rewritten if rewritten else excerpt
+            
+        except Exception as e:
+            logger.warning(f"Error rewriting excerpt: {e}, using original")
+            return excerpt
+    
     def generate_answer(self, query: str, search_results: List[Dict[str, Any]], custom_instructions: str = "") -> str:
         """Generate a comprehensive answer based on search results."""
         try:
