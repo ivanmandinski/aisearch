@@ -370,10 +370,45 @@ class WordPressContentFetcher:
             
             if img_tags:
                 for img in img_tags:
+                    # Try src attribute first
                     src = img.get('src', '')
-                    if src and (src.startswith('http') or src.startswith('/')):
-                        logger.info(f"Found image in content: {src}")
-                        return src
+                    if not src:
+                        # Try data-src (lazy loading)
+                        src = img.get('data-src', '')
+                    if not src:
+                        # Try srcset (responsive images)
+                        srcset = img.get('srcset', '')
+                        if srcset:
+                            # Extract first URL from srcset
+                            srcset_parts = srcset.split(',')
+                            if srcset_parts:
+                                src = srcset_parts[0].strip().split()[0]
+                    
+                    if src:
+                        # Handle relative URLs
+                        if src.startswith('http'):
+                            logger.info(f"Found image in content: {src}")
+                            return src
+                        elif src.startswith('//'):
+                            full_url = 'https:' + src
+                            logger.info(f"Found image in content (protocol-relative): {full_url}")
+                            return full_url
+                        elif src.startswith('/'):
+                            # If we have base_url, construct full URL
+                            if hasattr(self, 'base_url') and self.base_url:
+                                base = self.base_url.rstrip('/')
+                                full_url = base + src
+                                logger.info(f"Found image in content (relative): {full_url}")
+                                return full_url
+                            logger.info(f"Found image in content (relative): {src}")
+                            return src
+                        elif not src.startswith('data:'):  # Skip data URIs
+                            # Try to construct full URL if we have base_url
+                            if hasattr(self, 'base_url') and self.base_url:
+                                base = self.base_url.rstrip('/')
+                                full_url = base + '/' + src.lstrip('/')
+                                logger.info(f"Found image in content (constructed): {full_url}")
+                                return full_url
             
             return ""
             
@@ -436,6 +471,14 @@ class WordPressContentFetcher:
             # Handle featured image with improved extraction
             featured_image_url = self._extract_featured_image(post)
             featured_media_id = post.get("featured_media", 0)
+            
+            # If no featured image found, try to extract first image from post content
+            if not featured_image_url:
+                content = self._safe_get_text(post.get("content", {}), "rendered", "")
+                if content:
+                    featured_image_url = self._extract_image_from_content(content)
+                    if featured_image_url:
+                        logger.info(f"Using first image from post content as featured image: {featured_image_url}")
             
             if featured_image_url:
                 cleaned["featured_image"] = featured_image_url

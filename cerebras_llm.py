@@ -15,6 +15,121 @@ from query_analysis import analyze_query
 logger = logging.getLogger(__name__)
 
 
+def extract_json_array_from_text(text: str) -> list:
+    """
+    Robustly extract a JSON array from text that may contain extra content.
+    
+    Handles cases where LLM adds explanatory text before/after the JSON array.
+    """
+    import re
+    import json
+    
+    if not text or not text.strip():
+        raise ValueError("Empty text provided")
+    
+    # Strategy 1: Try parsing the entire text first
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+    
+    # Strategy 2: Extract from markdown code blocks
+    if "```json" in text:
+        code_block = text.split("```json")[1].split("```")[0].strip()
+        try:
+            parsed = json.loads(code_block)
+            if isinstance(parsed, list):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+    elif "```" in text:
+        code_block = text.split("```")[1].split("```")[0].strip()
+        try:
+            parsed = json.loads(code_block)
+            if isinstance(parsed, list):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+    
+    # Strategy 3: Find JSON array by balanced brackets
+    bracket_count = 0
+    start_idx = -1
+    for i, char in enumerate(text):
+        if char == '[':
+            if start_idx == -1:
+                start_idx = i
+            bracket_count += 1
+        elif char == ']':
+            bracket_count -= 1
+            if bracket_count == 0 and start_idx != -1:
+                # Found complete array
+                json_str = text[start_idx:i+1]
+                try:
+                    parsed = json.loads(json_str)
+                    if isinstance(parsed, list):
+                        return parsed
+                except json.JSONDecodeError:
+                    # Reset and continue searching
+                    start_idx = -1
+                    bracket_count = 0
+                    continue
+    
+    # Strategy 4: Find array after common prefixes
+    prefixes = [
+        "Here is the JSON array",
+        "JSON array",
+        "Here are the scores",
+        "Scores:",
+        "Here are",
+        "["
+    ]
+    for prefix in prefixes:
+        idx = text.find(prefix)
+        if idx != -1:
+            # Find the first '[' after the prefix
+            array_start = text.find('[', idx)
+            if array_start != -1:
+                # Try to parse from here using balanced brackets
+                remaining = text[array_start:]
+                bracket_count = 0
+                end_idx = -1
+                for i, char in enumerate(remaining):
+                    if char == '[':
+                        bracket_count += 1
+                    elif char == ']':
+                        bracket_count -= 1
+                        if bracket_count == 0:
+                            end_idx = i + 1
+                            break
+                if end_idx > 0:
+                    try:
+                        parsed = json.loads(remaining[:end_idx])
+                        if isinstance(parsed, list):
+                            return parsed
+                    except json.JSONDecodeError:
+                        continue
+    
+    # Strategy 5: Use regex with multiple attempts (non-greedy first)
+    patterns = [
+        r'\[(?:[^\[\]]|\[[^\]]*\])*\]',  # Non-greedy nested brackets
+        r'\[.*?\]',  # Non-greedy simple
+        r'\[.*\]',  # Greedy fallback
+    ]
+    for pattern in patterns:
+        json_match = re.search(pattern, text, re.DOTALL)
+        if json_match:
+            try:
+                parsed = json.loads(json_match.group())
+                if isinstance(parsed, list):
+                    return parsed
+            except json.JSONDecodeError:
+                continue
+    
+    raise ValueError(f"Could not extract JSON array from text: {text[:200]}...")
+
+
 class CerebrasLLM:
     """Cerebras LLM client for query rewriting and answering."""
     
@@ -675,7 +790,10 @@ Respond in JSON format:
         guidance_map = {
             "person_name": (
                 "When the user searches for a person, prioritize professional/staff profiles that match the full name. "
-                "Results that mention a different individual or only reference the surname should score lower."
+                "However, DO NOT filter out other relevant results (services, pages, articles) that are related to the query topic. "
+                "Results that mention a different individual or only reference the surname should score lower (30-50), "
+                "but other relevant content (services, case studies, articles) should still be included with moderate scores (40-70) "
+                "if they are relevant to the search topic, even if they don't mention the person."
             ),
             "executive_role": (
                 "The user is looking for a leadership role. Boost profiles or pages where the title (CEO, President, etc.) "
@@ -901,7 +1019,13 @@ BUSINESS CONTEXT:
 
 YOUR JOB:
 Score search results based on how well they match user queries for this business context.
-Consider business priorities: professional expertise, service offerings, and user intent."""
+Consider business priorities: professional expertise, service offerings, and user intent.
+
+CRITICAL: Queries can match multiple post types. For example:
+- A query about "supply chain management" might match services, case studies, AND professional profiles
+- A person name query might match the person's profile AND related services/articles
+- DO NOT give very low scores (below 30) just because a result is a different post type - score based on actual relevance to the query topic
+- Only give scores below 30 if the result is truly unrelated to the query topic"""
 
             if custom_instructions:
                 system_prompt += f"\n\n🎯 CUSTOM RANKING CRITERIA (HIGHEST PRIORITY):\n{custom_instructions}"
@@ -950,11 +1074,16 @@ Analyze these search results for the query: "{query}"
 
 2. **User Intent** (40 points)
    - Does it address what the user wants to accomplish?
+   - IMPORTANT: When scoring, consider that queries can match multiple post types. Don't filter out relevant results just because they're not the "primary" post type.
    
    INTENT SCORING:
-   • PERSON NAME ("James Walsh"): scs-professionals profile → Score: 95, Article mentioning person → Score: 75, Generic → Score: 30
+   • PERSON NAME ("James Walsh"): 
+     - scs-professionals profile matching name → Score: 95
+     - Article/case study mentioning person → Score: 75-85
+     - Service page related to person's expertise → Score: 60-70 (still relevant!)
+     - Generic content not mentioning person → Score: 30-40 (only if truly unrelated)
    • EXECUTIVE ROLE ("Who is the CEO?"): scs-professionals profile with role in title → Score: 100, Profile mentioning role → Score: 95, Press release naming CEO → Score: 90, Article mentioning CEO → Score: 70, Generic → Score: 30
-   • SERVICE ("hazardous waste"): scs-services page → Score: 95, Case study → Score: 80, Blog post → Score: 50
+   • SERVICE ("hazardous waste"): scs-services page → Score: 95, Case study → Score: 80, Blog post → Score: 50-70, Professional profile with relevant expertise → Score: 60-75
    • HOW-TO ("how to"): Step-by-step guide → Score: 90, Case study → Score: 70, General page → Score: 40
    • NAVIGATIONAL ("contact"): Exact page → Score: 100, Related page → Score: 65, Article → Score: 25
    • TRANSACTIONAL ("request quote"): Action page → Score: 95, Mentions service → Score: 60, Article → Score: 35
@@ -1013,31 +1142,14 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
             logger.info(f"LLM response received ({len(response_text)} chars)")
             logger.debug(f"Response preview: {response_text[:500]}")
             
-            # Extract JSON from response (handle markdown code blocks)
-            if "```json" in response_text:
-                response_text = response_text.split("```json")[1].split("```")[0].strip()
-            elif "```" in response_text:
-                response_text = response_text.split("```")[1].split("```")[0].strip()
-            
-            # Validate response_text before parsing
-            if not response_text or not response_text.strip():
-                logger.error(f"Empty response_text after extraction. Original: {response.choices[0].message.content[:200]}")
-                raise ValueError("Empty JSON response from LLM")
-            
-            # Try to parse JSON with better error handling
+            # Extract JSON array from response (handle markdown code blocks and extra text)
             try:
-                ai_scores = json.loads(response_text)
-            except json.JSONDecodeError as e:
-                logger.error(f"JSON decode error: {e}")
+                ai_scores = extract_json_array_from_text(response_text)
+                logger.info(f"Successfully extracted JSON array with {len(ai_scores)} items")
+            except (ValueError, json.JSONDecodeError) as e:
+                logger.error(f"Failed to extract JSON array: {e}")
                 logger.error(f"Response text that failed to parse: {response_text[:500]}")
-                # Try to extract JSON array from the text
-                import re
-                json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
-                if json_match:
-                    logger.info("Attempting to extract JSON array from text")
-                    ai_scores = json.loads(json_match.group())
-                else:
-                    raise ValueError(f"Could not parse JSON from LLM response: {e}")
+                raise ValueError(f"Could not parse JSON from LLM response: {e}")
             
             # Validate that ai_scores is a list
             if not isinstance(ai_scores, list):
@@ -1170,33 +1282,38 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
                 )
             
             # Filter out results marked as not relevant by AI
+            # IMPORTANT: Only filter truly irrelevant results, not results that are just lower priority
             filtered_results = []
-            not_relevant_keywords = [
+            
+            # Strong negative keywords that indicate complete irrelevance
+            strongly_not_relevant_keywords = [
                 'not relevant',
-                'not the same',
-                'not related',
                 'unrelated',
-                'does not match',
-                'does not address',
                 'irrelevant',
                 'not applicable',
                 'wrong',
                 'incorrect',
-                'different person',
-                'different topic',
-                'different subject',
-                'different company',
-                'different service',
-                'different location',
-                'different organization',
-                'other person',
-                'other company',
-                'not about',
-                'similar name only',
-                'mismatched service',
-                'not matching intent',
-                'outdated content',
+                'completely different',
+                'no connection',
+                'no relation',
             ]
+            
+            # Person-specific keywords that should only filter if query is actually a person search
+            person_specific_keywords = [
+                'different person',
+                'other person',
+                'no mention of the person',
+                'not the same person',
+            ]
+            
+            # Check if this is actually a person search
+            is_person_search = False
+            if query_context:
+                intent = query_context.get('intent', '')
+                entities = query_context.get('entities', {})
+                people_entities = entities.get('people', [])
+                if intent == 'person_name' or (people_entities and len(people_entities) > 0):
+                    is_person_search = True
             
             for result in reranked_results:
                 ai_reason = result.get('ai_reason', '').lower()
@@ -1205,19 +1322,28 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
                 # Check if AI explicitly marked as not relevant
                 is_not_relevant = False
                 
-                # Check AI reasoning text for not relevant keywords
+                # Check AI reasoning text for strongly not relevant keywords (always filter)
                 if ai_reason:
-                    for keyword in not_relevant_keywords:
+                    for keyword in strongly_not_relevant_keywords:
                         if keyword in ai_reason:
                             is_not_relevant = True
                             logger.info(f"🚫 Filtering out result '{result.get('title', '')[:50]}' - AI reason: '{ai_reason[:100]}'")
                             break
+                    
+                    # Only filter on person-specific keywords if this is actually a person search
+                    if not is_not_relevant and is_person_search:
+                        for keyword in person_specific_keywords:
+                            if keyword in ai_reason:
+                                is_not_relevant = True
+                                logger.info(f"🚫 Filtering out result '{result.get('title', '')[:50]}' - Person mismatch: '{ai_reason[:100]}'")
+                                break
                 
-                # Also filter if AI score is very low (below 30) AND reason contains negative indicators
+                # Only filter if AI score is very low (below 25) AND reason contains strong negative indicators
+                # Don't filter just because a result doesn't mention a person if the query isn't person-specific
                 if not is_not_relevant and ai_score_raw is not None:
-                    if ai_score_raw < 30 and any(keyword in ai_reason for keyword in ['not', 'different', 'wrong', 'incorrect']):
+                    if ai_score_raw < 25 and any(keyword in ai_reason for keyword in ['not relevant', 'unrelated', 'irrelevant', 'wrong', 'incorrect']):
                         is_not_relevant = True
-                        logger.info(f"🚫 Filtering out result '{result.get('title', '')[:50]}' - Low AI score ({ai_score_raw}) with negative reasoning")
+                        logger.info(f"🚫 Filtering out result '{result.get('title', '')[:50]}' - Very low AI score ({ai_score_raw}) with strong negative reasoning")
 
                 if not is_not_relevant:
                     ai_prob_value = result.get('ai_probability', 0.0)
@@ -1282,7 +1408,31 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
             
         except Exception as e:
             logger.error(f"❌ Error in AI reranking: {e}")
-            # Fallback to original scores
+            # Fallback to original scores, but still add ranking_explanation
+            for idx, result in enumerate(results):
+                if 'ranking_explanation' not in result:
+                    result['ranking_explanation'] = {
+                        'fusion_strategy': 'borda_weighted',
+                        'tfidf_score': round(result.get('score', 0.0), 4),
+                        'tfidf_probability': 0.0,
+                        'ai_score': None,
+                        'ai_probability': 0.0,
+                        'ai_score_raw': None,
+                        'tfidf_rank': idx + 1,
+                        'tfidf_rank_score': round(result.get('score', 0.0), 4),
+                        'ai_rank': None,
+                        'ai_rank_score': None,
+                        'tfidf_weight': 1.0,
+                        'ai_weight': 0.0,
+                        'probability_mix': 0.0,
+                        'hybrid_score': round(result.get('score', 0.0), 4),
+                        'ai_reason': f'AI reranking failed: {str(e)[:100]}',
+                        'post_type': result.get('type', 'unknown'),
+                        'position_before_priority': None,
+                        'final_position': idx + 1,
+                        'post_type_priority': 9999,
+                        'priority_order': post_type_priority if post_type_priority else []
+                    }
             return {
                 'results': results,
                 'metadata': {
@@ -1348,7 +1498,13 @@ BUSINESS CONTEXT:
 
 YOUR JOB:
 Score search results based on how well they match user queries for this business context.
-Consider business priorities: professional expertise, service offerings, and user intent."""
+Consider business priorities: professional expertise, service offerings, and user intent.
+
+CRITICAL: Queries can match multiple post types. For example:
+- A query about "supply chain management" might match services, case studies, AND professional profiles
+- A person name query might match the person's profile AND related services/articles
+- DO NOT give very low scores (below 30) just because a result is a different post type - score based on actual relevance to the query topic
+- Only give scores below 30 if the result is truly unrelated to the query topic"""
 
             if custom_instructions:
                 system_prompt += f"\n\n🎯 CUSTOM RANKING CRITERIA (HIGHEST PRIORITY):\n{custom_instructions}"
@@ -1396,11 +1552,16 @@ Analyze these search results for the query: "{query}"
 
 2. **User Intent** (40 points)
    - Does it address what the user wants to accomplish?
+   - IMPORTANT: When scoring, consider that queries can match multiple post types. Don't filter out relevant results just because they're not the "primary" post type.
    
    INTENT SCORING:
-   • PERSON NAME ("James Walsh"): scs-professionals profile → Score: 95, Article mentioning person → Score: 75, Generic → Score: 30
+   • PERSON NAME ("James Walsh"): 
+     - scs-professionals profile matching name → Score: 95
+     - Article/case study mentioning person → Score: 75-85
+     - Service page related to person's expertise → Score: 60-70 (still relevant!)
+     - Generic content not mentioning person → Score: 30-40 (only if truly unrelated)
    • EXECUTIVE ROLE ("Who is the CEO?"): scs-professionals profile with role in title → Score: 100, Profile mentioning role → Score: 95, Press release naming CEO → Score: 90, Article mentioning CEO → Score: 70, Generic → Score: 30
-   • SERVICE ("hazardous waste"): scs-services page → Score: 95, Case study → Score: 80, Blog post → Score: 50
+   • SERVICE ("hazardous waste"): scs-services page → Score: 95, Case study → Score: 80, Blog post → Score: 50-70, Professional profile with relevant expertise → Score: 60-75
    • HOW-TO ("how to"): Step-by-step guide → Score: 90, Case study → Score: 70, General page → Score: 40
    • NAVIGATIONAL ("contact"): Exact page → Score: 100, Related page → Score: 65, Article → Score: 25
    • TRANSACTIONAL ("request quote"): Action page → Score: 95, Mentions service → Score: 60, Article → Score: 35
@@ -1459,31 +1620,14 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
             logger.info(f"LLM response received ({len(response_text)} chars)")
             logger.debug(f"Response preview: {response_text[:500]}")
             
-            # Extract JSON from response (handle markdown code blocks)
-            if "```json" in response_text:
-                response_text = response_text.split("```json")[1].split("```")[0].strip()
-            elif "```" in response_text:
-                response_text = response_text.split("```")[1].split("```")[0].strip()
-            
-            # Validate response_text before parsing
-            if not response_text or not response_text.strip():
-                logger.error(f"Empty response_text after extraction. Original: {response.choices[0].message.content[:200]}")
-                raise ValueError("Empty JSON response from LLM")
-            
-            # Try to parse JSON with better error handling
+            # Extract JSON array from response (handle markdown code blocks and extra text)
             try:
-                ai_scores = json.loads(response_text)
-            except json.JSONDecodeError as e:
-                logger.error(f"JSON decode error: {e}")
+                ai_scores = extract_json_array_from_text(response_text)
+                logger.info(f"Successfully extracted JSON array with {len(ai_scores)} items")
+            except (ValueError, json.JSONDecodeError) as e:
+                logger.error(f"Failed to extract JSON array: {e}")
                 logger.error(f"Response text that failed to parse: {response_text[:500]}")
-                # Try to extract JSON array from the text
-                import re
-                json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
-                if json_match:
-                    logger.info("Attempting to extract JSON array from text")
-                    ai_scores = json.loads(json_match.group())
-                else:
-                    raise ValueError(f"Could not parse JSON from LLM response: {e}")
+                raise ValueError(f"Could not parse JSON from LLM response: {e}")
             
             # Validate that ai_scores is a list
             if not isinstance(ai_scores, list):
@@ -1605,33 +1749,38 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
                 reranked_results.sort(key=lambda x: x.get('hybrid_score', 0), reverse=True)
             
             # Filter out results marked as not relevant by AI
+            # IMPORTANT: Only filter truly irrelevant results, not results that are just lower priority
             filtered_results = []
-            not_relevant_keywords = [
+            
+            # Strong negative keywords that indicate complete irrelevance
+            strongly_not_relevant_keywords = [
                 'not relevant',
-                'not the same',
-                'not related',
                 'unrelated',
-                'does not match',
-                'does not address',
                 'irrelevant',
                 'not applicable',
                 'wrong',
                 'incorrect',
-                'different person',
-                'different topic',
-                'different subject',
-                'different company',
-                'different service',
-                'different location',
-                'different organization',
-                'other person',
-                'other company',
-                'not about',
-                'similar name only',
-                'mismatched service',
-                'not matching intent',
-                'outdated content',
+                'completely different',
+                'no connection',
+                'no relation',
             ]
+            
+            # Person-specific keywords that should only filter if query is actually a person search
+            person_specific_keywords = [
+                'different person',
+                'other person',
+                'no mention of the person',
+                'not the same person',
+            ]
+            
+            # Check if this is actually a person search
+            is_person_search = False
+            if query_context:
+                intent = query_context.get('intent', '')
+                entities = query_context.get('entities', {})
+                people_entities = entities.get('people', [])
+                if intent == 'person_name' or (people_entities and len(people_entities) > 0):
+                    is_person_search = True
             
             for result in reranked_results:
                 ai_reason = result.get('ai_reason', '').lower()
@@ -1640,19 +1789,28 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
                 # Check if AI explicitly marked as not relevant
                 is_not_relevant = False
                 
-                # Check AI reasoning text for not relevant keywords
+                # Check AI reasoning text for strongly not relevant keywords (always filter)
                 if ai_reason:
-                    for keyword in not_relevant_keywords:
+                    for keyword in strongly_not_relevant_keywords:
                         if keyword in ai_reason:
                             is_not_relevant = True
                             logger.info(f"🚫 Filtering out result '{result.get('title', '')[:50]}' - AI reason: '{ai_reason[:100]}'")
                             break
+                    
+                    # Only filter on person-specific keywords if this is actually a person search
+                    if not is_not_relevant and is_person_search:
+                        for keyword in person_specific_keywords:
+                            if keyword in ai_reason:
+                                is_not_relevant = True
+                                logger.info(f"🚫 Filtering out result '{result.get('title', '')[:50]}' - Person mismatch: '{ai_reason[:100]}'")
+                                break
                 
-                # Also filter if AI score is very low (below 30) AND reason contains negative indicators
+                # Only filter if AI score is very low (below 25) AND reason contains strong negative indicators
+                # Don't filter just because a result doesn't mention a person if the query isn't person-specific
                 if not is_not_relevant and ai_score_raw is not None:
-                    if ai_score_raw < 30 and any(keyword in ai_reason for keyword in ['not', 'different', 'wrong', 'incorrect']):
+                    if ai_score_raw < 25 and any(keyword in ai_reason for keyword in ['not relevant', 'unrelated', 'irrelevant', 'wrong', 'incorrect']):
                         is_not_relevant = True
-                        logger.info(f"🚫 Filtering out result '{result.get('title', '')[:50]}' - Low AI score ({ai_score_raw}) with negative reasoning")
+                        logger.info(f"🚫 Filtering out result '{result.get('title', '')[:50]}' - Very low AI score ({ai_score_raw}) with strong negative reasoning")
                 
                 if not is_not_relevant:
                     ai_prob_value = result.get('ai_probability', 0.0)
@@ -1707,7 +1865,31 @@ Return a JSON array with scores for EACH result (include all {len(results)} resu
             
         except Exception as e:
             logger.error(f"❌ Error in AI reranking: {e}")
-            # Fallback to original scores
+            # Fallback to original scores, but still add ranking_explanation
+            for idx, result in enumerate(results):
+                if 'ranking_explanation' not in result:
+                    result['ranking_explanation'] = {
+                        'fusion_strategy': 'borda_weighted',
+                        'tfidf_score': round(result.get('score', 0.0), 4),
+                        'tfidf_probability': 0.0,
+                        'ai_score': None,
+                        'ai_probability': 0.0,
+                        'ai_score_raw': None,
+                        'tfidf_rank': idx + 1,
+                        'tfidf_rank_score': round(result.get('score', 0.0), 4),
+                        'ai_rank': None,
+                        'ai_rank_score': None,
+                        'tfidf_weight': 1.0,
+                        'ai_weight': 0.0,
+                        'probability_mix': 0.0,
+                        'hybrid_score': round(result.get('score', 0.0), 4),
+                        'ai_reason': f'AI reranking failed: {str(e)[:100]}',
+                        'post_type': result.get('type', 'unknown'),
+                        'position_before_priority': None,
+                        'final_position': idx + 1,
+                        'post_type_priority': 9999,
+                        'priority_order': post_type_priority if post_type_priority else []
+                    }
             return {
                 'results': results,
                 'metadata': {
