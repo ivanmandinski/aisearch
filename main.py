@@ -157,11 +157,24 @@ class SearchRequest(BaseModel):
     include_answer: bool = Field(default=False)
     filters: Optional[SearchFilters] = None
     ai_instructions: Optional[str] = None
+    enable_ai_reranking: bool = Field(default=True, description="Whether to use AI reranking")
+    wordpress_api_url: Optional[str] = Field(default=None, description="WordPress API URL")
+    wordpress_username: Optional[str] = Field(default=None, description="WordPress username")
+    wordpress_password: Optional[str] = Field(default=None, description="WordPress password")
+    ai_reranking_instructions: Optional[str] = Field(default="", description="Custom AI reranking instructions")
+    ai_weight: float = Field(default=0.7, ge=0.0, le=1.0, description="Weight for AI score")
+    post_type_priority: Optional[List[str]] = Field(default=None, description="Post types in priority order")
+    behavioral_signals: Optional[Dict[str, Any]] = Field(default=None, description="Behavioral signals for ranking")
 
 
 class IndexSingleRequest(BaseModel):
     """Request model for single document indexing."""
     document: Dict[str, Any] = Field(..., description="Document to index")
+
+
+class IndexBatchRequest(BaseModel):
+    """Request model for batch document indexing."""
+    documents: List[Dict[str, Any]] = Field(..., description="List of documents to index", min_length=1, max_length=100)
 
 
 class IndexRequest(BaseModel):
@@ -589,6 +602,57 @@ async def index_single_endpoint(request: IndexSingleRequest) -> Dict[str, Any]:
         )
 
 
+@app.post("/index-batch")
+async def index_batch_endpoint(request: IndexBatchRequest) -> Dict[str, Any]:
+    """Index multiple documents in a single batch (more efficient than individual calls)."""
+    logger.info(f"Received batch document indexing request for {len(request.documents)} documents")
+    
+    if search_system is None:
+        return service_unavailable("index-batch", {"message": "Search system not initialised"})
+    
+    try:
+        documents = request.documents
+        
+        # Validate required fields for all documents
+        invalid_docs = []
+        for i, doc in enumerate(documents):
+            if "id" not in doc:
+                invalid_docs.append(f"Document at index {i} missing 'id' field")
+        
+        if invalid_docs:
+            return create_error_response(
+                ValidationError(f"Invalid documents: {', '.join(invalid_docs)}", field="documents"),
+                request_id=str(uuid.uuid4()),
+            )
+        
+        # Index the batch of documents (don't clear existing collection)
+        success = await search_system.index_documents(documents, clear_existing=False)
+        
+        if success:
+            logger.info(f"✅ Successfully indexed batch of {len(documents)} documents")
+            return create_success_response(
+                {
+                    "status": "completed",
+                    "message": f"Successfully indexed {len(documents)} documents",
+                    "indexed_count": len(documents),
+                    "document_ids": [doc.get("id") for doc in documents],
+                }
+            )
+        else:
+            logger.error("❌ Batch document indexing failed")
+            return create_error_response(
+                SearchError("Indexing failed", details={"message": "Failed to index documents"}),
+                request_id=str(uuid.uuid4()),
+            )
+    
+    except Exception as exc:
+        logger.exception("Batch document indexing error: %s", exc)
+        return create_error_response(
+            SearchError("Indexing failed", details={"error": str(exc)}),
+            request_id=str(uuid.uuid4()),
+        )
+
+
 @app.delete("/delete-document/{document_id}")
 async def delete_document_endpoint(document_id: str) -> Dict[str, Any]:
     """Delete a document from the search index."""
@@ -635,6 +699,7 @@ async def root_endpoint() -> Dict[str, Any]:
             "search": "POST /search",
             "index": "POST /index",
             "index_single": "POST /index-single",
+            "index_batch": "POST /index-batch",
             "delete_document": "DELETE /delete-document/{document_id}",
             "health": "GET /health",
             "health_quick": "GET /health/quick",

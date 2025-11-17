@@ -224,3 +224,5 @@ The system is designed to index only selected post types, but there's a gap betw
 - The `/stats` endpoint response
 - The Qdrant collection directly
 
+
+
