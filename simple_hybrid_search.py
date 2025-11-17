@@ -436,8 +436,8 @@ class SimpleHybridSearch:
             
             logger.info(f"Search request: query='{query}', offset={offset}, limit={limit}")
             
-            # Step 0.5: Analyze query intent and entities
-            query_analysis = analyze_query(query)
+            # Step 0.5: Analyze query intent and entities (with AI if available)
+            query_analysis = analyze_query(query, llm_client=self.llm_client, use_ai=True)
             detected_intent = query_analysis.get('intent', 'general')
             intent_confidence = query_analysis.get('confidence', 0.0)
             self._last_query_analysis = query_analysis
@@ -463,27 +463,56 @@ class SimpleHybridSearch:
             ctr_map = behavioral_maps.get('ctr', {})
             behavioral_enabled = settings.enable_ctr_boost and bool(ctr_map)
             
-            # Apply intent-based post type priority
-            intent_based_priority = None
-            if detected_intent == 'person_name':
-                intent_based_priority = ['scs-professionals', 'page', 'post', 'attachment']
-                logger.info(f"Person search: Prioritizing SCS Professionals")
-            elif detected_intent == 'executive_role':
-                intent_based_priority = ['scs-professionals', 'page', 'post', 'attachment']
-                logger.info(f"Executive role search: Prioritizing SCS Professionals")
-            elif detected_intent == 'service':
-                intent_based_priority = ['page', 'scs-services', 'post']
-                logger.info(f"Service search: Prioritizing service pages")
-            elif detected_intent == 'howto':
-                intent_based_priority = ['post', 'page', 'scs-professionals']
-                logger.info(f"How-to search: Prioritizing articles")
-            # Note: 'navigational' and 'transactional' use default priority
-            # 'general' uses user's custom priority
+            # Get context-aware post type recommendations based on query analysis
+            from query_analysis import get_recommended_post_types
             
-            # Use intent-based priority if no user priority specified
-            if not post_type_priority and intent_based_priority:
-                post_type_priority = intent_based_priority
-                logger.info(f"Using intent-based priority: {post_type_priority}")
+            # Use context-aware recommendations, merging with admin-set priority
+            context_recommended_priority = get_recommended_post_types(query_analysis, default_priority=post_type_priority)
+            
+            # If admin set a priority, we can either:
+            # Option 1: Use context recommendations as override (smart mode)
+            # Option 2: Use admin priority as base and apply context adjustments (hybrid mode)
+            # Option 3: Always use admin priority (strict mode)
+            # For now, we'll use hybrid mode: admin priority as base, context as smart adjustments
+            
+            if post_type_priority:
+                # Admin priority exists - use it as base, but apply context adjustments
+                # Context adjustments will reorder within admin's priority list
+                logger.info(f"Admin priority (base): {post_type_priority}")
+                logger.info(f"Context-recommended priority: {context_recommended_priority}")
+                
+                # Merge: prioritize types that are in both lists, maintaining admin order for others
+                merged_priority = []
+                seen = set()
+                
+                # First, add context-recommended types that are also in admin priority
+                for pt in context_recommended_priority:
+                    if pt in post_type_priority and pt not in seen:
+                        merged_priority.append(pt)
+                        seen.add(pt)
+                
+                # Then add remaining admin priority types
+                for pt in post_type_priority:
+                    if pt not in seen:
+                        merged_priority.append(pt)
+                        seen.add(pt)
+                
+                # Finally, add any context-recommended types not in admin priority
+                for pt in context_recommended_priority:
+                    if pt not in seen:
+                        merged_priority.append(pt)
+                        seen.add(pt)
+                
+                # Use merged priority
+                effective_priority = merged_priority
+                logger.info(f"Using merged priority (admin + context): {effective_priority}")
+            else:
+                # No admin priority - use context recommendations directly
+                effective_priority = context_recommended_priority
+                logger.info(f"Using context-recommended priority: {effective_priority}")
+            
+            # Store for use in post type priority application
+            post_type_priority = effective_priority
             
             # Step 1: Get candidates using TF-IDF + Vector search with RRF
             # For pagination to work correctly, we need to get a larger set of results
@@ -1169,15 +1198,16 @@ Return ONLY the queries, one per line, without numbering or bullet points.
     
     def _apply_post_type_priority(self, results: List[Dict[str, Any]], priority: List[str]) -> List[Dict[str, Any]]:
         """
-        Apply post type priority to search results.
+        Re-sort results by post type priority.
         Results with higher priority post types will appear first within each score tier.
+        ALL results are included, just reordered - no filtering.
         
         Args:
             results: List of search results
             priority: List of post types in priority order (e.g., ['post', 'page'])
             
         Returns:
-            Results sorted by priority then score
+            Re-sorted results (ALL results included, just reordered)
         """
         if not results or not priority:
             return results
@@ -1190,13 +1220,14 @@ Return ONLY the queries, one per line, without numbering or bullet points.
             post_type = result.get('type', '')
             return priority_map.get(post_type, 9999)  # Unknown types go last
         
-        # Sort by priority first, then by score (descending)
+        # Sort by: existing score (descending), then priority (ascending - lower number = higher priority)
+        # This maintains score-based ranking but prioritizes certain post types within same scores
         sorted_results = sorted(
             results,
-            key=lambda x: (get_priority(x), -x.get('score', 0))
+            key=lambda x: (-x.get('score', 0.0), get_priority(x))
         )
         
-        return sorted_results
+        return sorted_results  # ALL results returned, just reordered
     
     def detect_query_intent(self, query: str) -> str:
         """
@@ -1208,7 +1239,7 @@ Return ONLY the queries, one per line, without numbering or bullet points.
         Returns:
             Intent type: 'person_name', 'service', 'howto', 'navigational', 'transactional', or 'general'
         """
-        analysis = analyze_query(query)
+        analysis = analyze_query(query, llm_client=self.llm_client, use_ai=True)
         intent = analysis.get('intent', 'general')
         self._last_query_analysis = analysis
         logger.info(f"Detected intent via shared analyzer: '{intent}' for query '{query}'")

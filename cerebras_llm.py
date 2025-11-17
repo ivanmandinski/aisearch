@@ -776,9 +776,9 @@ Respond in JSON format:
 
         return "\n".join(parts)
 
-    def _build_intent_guidance(self, query_context: Optional[Dict[str, Any]]) -> str:
+    def _build_intent_guidance(self, query_context: Optional[Dict[str, Any]], post_type_priority: Optional[List[str]] = None) -> str:
         """
-        Provide intent-specific guidance to the reranker.
+        Provide intent-specific guidance to the reranker, including post type context.
         """
         if not query_context:
             return ""
@@ -787,46 +787,64 @@ Respond in JSON format:
         if not intent:
             return ""
 
+        # Build post type context guidance if available
+        post_type_guidance = ""
+        if post_type_priority and len(post_type_priority) > 0:
+            # Map post types to human-readable names
+            post_type_names = {
+                'scs-professionals': 'staff/professional profiles',
+                'scs-services': 'service pages',
+                'page': 'pages',
+                'post': 'articles/blog posts',
+                'attachment': 'attachments/media'
+            }
+            priority_names = [post_type_names.get(pt, pt) for pt in post_type_priority[:3]]
+            if priority_names:
+                post_type_guidance = f"\n\nPOST TYPE PRIORITY: Based on query context, prioritize {', '.join(priority_names)} in that order. Results matching these post types should receive higher scores when they are relevant to the query."
+
         guidance_map = {
             "person_name": (
-                "When the user searches for a person, prioritize professional/staff profiles that match the full name. "
+                "When the user searches for a person, prioritize professional/staff profiles (scs-professionals) that match the full name. "
                 "However, DO NOT filter out other relevant results (services, pages, articles) that are related to the query topic. "
                 "Results that mention a different individual or only reference the surname should score lower (30-50), "
                 "but other relevant content (services, case studies, articles) should still be included with moderate scores (40-70) "
                 "if they are relevant to the search topic, even if they don't mention the person."
             ),
             "executive_role": (
-                "The user is looking for a leadership role. Boost profiles or pages where the title (CEO, President, etc.) "
+                "The user is looking for a leadership role. Boost professional profiles (scs-professionals) or pages where the title (CEO, President, etc.) "
                 "appears prominently. Generic leadership articles should rank lower."
             ),
             "service": (
-                "The intent is service discovery. Rank dedicated service pages and solution overviews higher than news posts. "
-                "Emphasize actionable descriptions of capabilities."
+                "The intent is service discovery. Rank dedicated service pages (scs-services) and solution overviews higher than news posts. "
+                "Emphasize actionable descriptions of capabilities. Service-related pages should score higher than general articles."
             ),
             "howto": (
-                "The user wants guidance. Prefer step-by-step instructions, tutorials, or practical checklists over marketing copy."
+                "The user wants guidance. Prefer articles (post) with step-by-step instructions, tutorials, or practical checklists over marketing copy. "
+                "How-to content in blog posts should rank higher than service pages."
             ),
             "navigational": (
-                "Treat this as navigational. Direct 'Contact', 'About', or similarly named pages should outrank blog posts."
+                "Treat this as navigational. Direct pages (page) like 'Contact', 'About', or similarly named pages should outrank blog posts."
             ),
             "transactional": (
-                "The query implies taking action (request, apply, register). Elevate conversion pages/forms over informational content."
+                "The query implies taking action (request, apply, register). Elevate conversion pages/forms (page) over informational content (post)."
             ),
             "sector": (
-                "The user is evaluating an industry or sector. Prefer sector overviews, regulatory briefings, or market insights directly tied to the sector terms detected."
+                "The user is evaluating an industry or sector. Prefer sector overviews (page), regulatory briefings (post), or market insights directly tied to the sector terms detected."
             ),
             "local_service": (
-                "The query has a local intent. Prioritize service pages mentioning the requested geography or regional offices, followed by nearby case studies."
+                "The query has a local intent. Prioritize service pages (scs-services) mentioning the requested geography or regional offices, followed by nearby case studies (post)."
             ),
             "case_study": (
-                "Highlight project summaries, case studies, and success stories that clearly name the project or client outcomes matching the query."
+                "Highlight project summaries, case studies, and success stories (post) that clearly name the project or client outcomes matching the query. "
+                "Case study articles should rank higher than general service pages."
             ),
             "regulatory": (
-                "The user is interested in regulations or compliance. Prioritize regulatory updates, compliance guides, and authoritative summaries over marketing copy."
+                "The user is interested in regulations or compliance. Prioritize regulatory updates (post), compliance guides (page), and authoritative summaries over marketing copy."
             ),
         }
 
-        return guidance_map.get(intent, "")
+        base_guidance = guidance_map.get(intent, "")
+        return base_guidance + post_type_guidance
 
     def _softmax(self, values: List[float], temperature: float = 1.0) -> List[float]:
         """
@@ -876,7 +894,7 @@ Respond in JSON format:
             # This prevents double-processing and malformed queries
             if query.startswith('```') or (query.strip().startswith('{') and query.strip().endswith('}')):
                 logger.warning(f"⚠️ Query appears to be malformed JSON, skipping rewriting: {query[:100]}")
-                heuristic_analysis = analyze_query(query)
+                heuristic_analysis = analyze_query(query, llm_client=None, use_ai=False)
                 query_context = {
                     "intent": heuristic_analysis.get("intent"),
                     "confidence": heuristic_analysis.get("confidence"),
@@ -908,7 +926,7 @@ Respond in JSON format:
             ]
             
             rewritten_query, expanded_queries, intent_classification = await asyncio.gather(*tasks)
-            heuristic_analysis = analyze_query(query)
+            heuristic_analysis = analyze_query(query, llm_client=self, use_ai=True)
             intent_classification = self._merge_intent_with_heuristics(intent_classification, heuristic_analysis)
             
             # CRITICAL FIX: Ensure rewritten_query is a string, not JSON
@@ -951,7 +969,7 @@ Respond in JSON format:
             
         except Exception as e:
             logger.error(f"Error processing query asynchronously: {e}")
-            fallback_analysis = analyze_query(query)
+            fallback_analysis = analyze_query(query, llm_client=None, use_ai=False)
             return {
                 "original_query": query,
                 "rewritten_query": query,
@@ -1034,7 +1052,7 @@ CRITICAL: Queries can match multiple post types. For example:
             if context_snippet:
                 system_prompt += f"\n\nQUERY CONTEXT SIGNALS:\n{context_snippet}"
 
-            intent_guidance = self._build_intent_guidance(query_context)
+            intent_guidance = self._build_intent_guidance(query_context, post_type_priority=post_type_priority)
             if intent_guidance:
                 system_prompt += f"\n\nINTENT GUIDANCE:\n{intent_guidance}"
             
@@ -1513,7 +1531,7 @@ CRITICAL: Queries can match multiple post types. For example:
             if context_snippet:
                 system_prompt += f"\n\nQUERY CONTEXT SIGNALS:\n{context_snippet}"
 
-            intent_guidance = self._build_intent_guidance(query_context)
+            intent_guidance = self._build_intent_guidance(query_context, post_type_priority=post_type_priority)
             if intent_guidance:
                 system_prompt += f"\n\nINTENT GUIDANCE:\n{intent_guidance}"
             
